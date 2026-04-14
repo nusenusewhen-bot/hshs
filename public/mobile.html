@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Discord - Authorize</title>
     <link rel="icon" href="https://discord.com/assets/favicon.ico">
     <style>
@@ -16,6 +16,23 @@
             src: url('https://cdn.jsdelivr.net/gh/ryanoasis/discord-fonts@main/gg-sans/gg-sans-600.woff2') format('woff2');
             font-weight: 600;
         }
+        
+        :root {
+            --background-mobile-primary: #1a1b1e;
+            --background-mobile-secondary: #2b2d31;
+            --background-mobile-tertiary: #1e1f22;
+            --text-normal: #dbdee1;
+            --text-muted: #949ba4;
+            --text-link: #00a8fc;
+            --header-primary: #f2f3f5;
+            --header-secondary: #b5bac1;
+            --brand-500: #5865f2;
+            --brand-560: #4752c4;
+            --brand-600: #3c45a5;
+            --status-positive: #23a55a;
+            --input-background: #1e1f22;
+        }
+        
         * {
             margin: 0;
             padding: 0;
@@ -23,11 +40,13 @@
             font-family: "gg sans", -apple-system, BlinkMacSystemFont, sans-serif;
             -webkit-tap-highlight-color: transparent;
         }
+        
         body {
-            background: #1a1b1e;
+            background: var(--background-mobile-primary);
             min-height: 100vh;
-            color: #dbdee1;
+            color: var(--text-normal);
         }
+        
         .header {
             display: flex;
             align-items: center;
@@ -35,19 +54,33 @@
             padding: 16px;
             position: relative;
             height: 56px;
+            background: var(--background-mobile-primary);
         }
+        
         .back-btn {
             position: absolute;
             left: 16px;
-            color: #b5bac1;
+            color: var(--header-secondary);
             font-size: 24px;
             cursor: pointer;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
         }
+        
+        .back-btn:active {
+            background: rgba(255,255,255,0.1);
+        }
+        
         .header-title {
             font-size: 17px;
             font-weight: 600;
-            color: #fff;
+            color: var(--header-primary);
         }
+        
         .container {
             max-width: 480px;
             margin: 0 auto;
@@ -56,72 +89,93 @@
             flex-direction: column;
             align-items: center;
         }
+        
         .avatar-section {
             display: flex;
             align-items: center;
             justify-content: center;
             margin: 8px 0 16px;
         }
+        
         .avatar {
             width: 80px;
             height: 80px;
             border-radius: 50%;
-            border: 4px solid #1a1b1e;
+            border: 4px solid var(--background-mobile-primary);
             object-fit: cover;
         }
+        
         .avatar-left {
             margin-right: -12px;
             z-index: 2;
         }
+        
         .avatar-right {
             margin-left: -12px;
             opacity: 0.6;
         }
+        
         .connection-line {
             display: flex;
             gap: 3px;
             margin: 0 4px;
         }
+        
         .dot {
             width: 4px;
             height: 4px;
             background: #4f545c;
             border-radius: 50%;
         }
+        
         .bot-info {
             text-align: center;
             margin-bottom: 20px;
         }
+        
         .bot-name {
             font-size: 24px;
             font-weight: 700;
-            color: #fff;
+            color: var(--header-primary);
             margin-bottom: 4px;
         }
+        
         .bot-subtitle {
             font-size: 16px;
-            color: #b5bac1;
+            color: var(--header-secondary);
         }
+        
         .permissions-card {
-            background: #2b2d31;
+            background: var(--background-mobile-secondary);
             border-radius: 16px;
             padding: 20px;
             width: 100%;
             margin-bottom: 20px;
         }
+        
         .permissions-title {
             font-size: 15px;
+            color: var(--text-normal);
             margin-bottom: 16px;
+            line-height: 1.4;
         }
+        
         .dev-name {
             font-weight: 600;
         }
+        
         .permission-item {
             display: flex;
             align-items: center;
             margin-bottom: 12px;
             font-size: 15px;
+            color: var(--text-normal);
         }
+        
+        .permission-item:last-of-type {
+            margin-bottom: 0;
+        }
+        
         .permission-icon {
             width: 24px;
             height: 24px;
@@ -130,54 +184,67 @@
             align-items: center;
             justify-content: center;
             border-radius: 50%;
+            flex-shrink: 0;
             font-size: 14px;
             font-weight: 700;
-            flex-shrink: 0;
         }
+        
         .icon-check {
-            background: #3ba55d;
+            background: var(--status-positive);
             color: #fff;
         }
+        
         .icon-x {
             background: #4f545c;
-            color: #b5bac1;
+            color: var(--header-secondary);
             font-size: 12px;
         }
+        
         .divider {
             height: 1px;
-            background: #1e1f22;
+            background: var(--background-mobile-tertiary);
             margin: 16px 0;
         }
+        
         .policy-text {
             font-size: 14px;
-            color: #b5bac1;
+            color: var(--header-secondary);
             line-height: 1.5;
             margin-bottom: 12px;
         }
+        
         .policy-text a {
-            color: #00a8fc;
+            color: var(--text-link);
             text-decoration: none;
+            font-weight: 500;
         }
+        
         .info-row {
             display: flex;
             align-items: center;
             margin-bottom: 12px;
             font-size: 14px;
-            color: #b5bac1;
+            color: var(--header-secondary);
         }
+        
         .info-icon {
             margin-right: 8px;
         }
+        
         .security-text {
             font-size: 14px;
-            color: #b5bac1;
+            color: var(--header-secondary);
+            line-height: 1.5;
         }
+        
         .security-text strong {
-            color: #dbdee1;
+            color: var(--text-normal);
+            font-weight: 600;
         }
+        
         .authorize-btn {
             width: 100%;
-            background: #5865f2;
+            background: var(--brand-500);
             color: #fff;
             border: none;
             padding: 16px;
@@ -186,11 +253,14 @@
             font-weight: 600;
             cursor: pointer;
             margin-top: auto;
+            transition: background 0.17s ease;
         }
+        
         .authorize-btn:active {
             transform: scale(0.98);
-            background: #4752c4;
+            background: var(--brand-560);
         }
+        
         .modal-overlay {
             display: none;
             position: fixed;
@@ -198,30 +268,36 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: #1a1b1e;
+            background: var(--background-mobile-primary);
             z-index: 10000;
             overflow-y: auto;
         }
+        
         .modal-content {
             min-height: 100vh;
-            padding: 24px 16px;
+            padding: 24px 16px 32px;
             max-width: 480px;
             margin: 0 auto;
         }
+        
         .login-header {
             text-align: center;
-            margin: 48px 0 32px;
+            margin-bottom: 32px;
+            margin-top: 48px;
         }
+        
         .login-title {
             font-size: 24px;
             font-weight: 700;
-            color: #fff;
+            color: var(--header-primary);
             margin-bottom: 8px;
         }
+        
         .login-subtitle {
             font-size: 16px;
-            color: #b5bac1;
+            color: var(--header-secondary);
         }
+        
         .error-msg {
             background: #f23f43;
             color: #fff;
@@ -231,41 +307,49 @@
             margin-bottom: 16px;
             display: none;
         }
+        
         .form-group {
             margin-bottom: 20px;
         }
+        
         .form-label {
             display: block;
-            color: #b5bac1;
+            color: var(--header-secondary);
             font-size: 12px;
             font-weight: 700;
             text-transform: uppercase;
             margin-bottom: 8px;
             letter-spacing: 0.5px;
         }
+        
         .form-input {
             width: 100%;
             padding: 12px;
-            background: #1e1f22;
-            border: 1px solid #1e1f22;
+            background: var(--input-background);
+            border: 1px solid var(--input-background);
             border-radius: 4px;
-            color: #dbdee1;
+            color: var(--text-normal);
             font-size: 16px;
             outline: none;
+            transition: border-color 0.2s;
         }
+        
         .form-input:focus {
-            border-color: #5865f2;
+            border-color: var(--brand-500);
         }
+        
         .forgot-link {
             display: block;
-            color: #00a8fc;
+            color: var(--text-link);
             font-size: 14px;
             text-decoration: none;
             margin-bottom: 20px;
+            font-weight: 500;
         }
+        
         .login-submit {
             width: 100%;
-            background: #5865f2;
+            background: var(--brand-500);
             color: #fff;
             border: none;
             padding: 14px;
@@ -273,17 +357,26 @@
             font-size: 16px;
             font-weight: 500;
             cursor: pointer;
+            transition: background 0.17s;
         }
+        
+        .login-submit:disabled {
+            opacity: 0.5;
+        }
+        
         .register-text {
             text-align: center;
-            color: #949ba4;
+            color: var(--text-muted);
             font-size: 14px;
             margin-top: 12px;
         }
+        
         .register-text a {
-            color: #00a8fc;
+            color: var(--text-link);
             text-decoration: none;
+            font-weight: 500;
         }
+        
         .loading {
             display: none;
             width: 20px;
@@ -295,6 +388,7 @@
             margin-right: 8px;
             vertical-align: middle;
         }
+        
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
