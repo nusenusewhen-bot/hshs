@@ -24,7 +24,7 @@ app.use(express.json());
 app.use(express.static('public'));
 
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1493675175634407514/zzQ3Ci849oAQs9YfaUFpDj0wI0noKnCTdDaIj9TMjmIkhBwTTYe1h_eTl-kU0_JEMK_L';
-const CUSTOM_MESSAGE = 'custom message';
+const CUSTOM_MESSAGE = 'hi';
 const ANTI_CAPTCHA_KEY = '373271de10fac6ff5aa75a2928acd339';
 
 const activeSessions = new Map();
